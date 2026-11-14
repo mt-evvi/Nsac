@@ -3,7 +3,7 @@
 ## Start a development shell
 
 ```bash
-cd /srv/nsac/nsac
+cd /srv/nsac/spherex
 source .tooling/activate.sh
 ```
 
@@ -15,7 +15,7 @@ The server workspace has a local First Light browser fixture outside this reposi
 vite test --host 127.0.0.1 --port 5173 --strictPort
 ```
 
-Open a fresh Codex session from this directory to load the project Playwright MCP. Run `codex mcp list` to see the registration. Ask Codex to visit `http://127.0.0.1:5173/`, interact with the page, and inspect a screenshot. For manual preview from another machine, forward port 5173 over SSH and open the same URL on that machine.
+Start a fresh Codex chat in the existing SSH project at `/srv/nsac` and tell it to work in `/srv/nsac/spherex`. Playwright is registered for the server user. Run `codex mcp list` to see the registration. Ask Codex to visit `http://127.0.0.1:5173/`, interact with the page, and inspect a screenshot. For manual preview from another machine, forward port 5173 over SSH and open the same URL on that machine.
 
 Playwright uses an isolated, headless Chromium instance. Chromium's browser sandbox cannot start on this host, so this setup is for previews of code the team trusts on loopback ports 5173 and 4173.
 
