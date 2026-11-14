@@ -95,8 +95,8 @@ Treat the release adapter in §3 as the plan for new SPHEREx releases. Use WiseV
 
 ## Build-chat handoff
 
-Keep the existing server project in the app. For a fresh CLI session, run `codex -C /srv/nsac/nsac` to set the build working directory and pick up the project Playwright MCP. If opening a fresh chat at the parent directory, direct it to work in `/srv/nsac/nsac` and check that Playwright tools are visible. The activation script is shell-local and can be sourced by absolute path.
+Start a fresh chat under the existing SSH project at `/srv/nsac`. Tell it to work in `/srv/nsac/spherex`, where the build files live. Starting a CLI session from the app directory with `codex -C /srv/nsac/spherex` also works. Playwright is registered for the server user. The activation script in [DEVELOPMENT.md](DEVELOPMENT.md) is for shell commands.
 
 Suggested first build prompt:
 
-> Work in /srv/nsac/nsac. Read BUILD_PLAN.md, DEVELOPMENT.md, and the linked specifications in docs/. Build the full scope in milestone order, beginning with a vertical slice that fetches two compatible real SPHEREx visits, aligns them and supports on-demand time-slider playback. Record product IDs, dates and coverage limits. Verify the five required targets, comparison and tracking, overlays, spectra, and resource budgets. Send reviewed project files to mt-evvi/Nsac. Prepare a production release for this server and use the owner-approved hostname and Caddy procedure.
+> Work in /srv/nsac/spherex. Read BUILD_PLAN.md, DEVELOPMENT.md, and the linked specifications in docs/. Build the full scope in milestone order, beginning with a vertical slice that fetches two compatible real SPHEREx visits, aligns them and supports on-demand time-slider playback. Record product IDs, dates and coverage limits. Verify the five required targets, comparison and tracking, overlays, spectra, and resource budgets. Send reviewed project files to mt-evvi/Nsac. Prepare a production release for this server and use the owner-approved hostname and Caddy procedure.
