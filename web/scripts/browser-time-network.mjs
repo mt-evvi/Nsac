@@ -170,7 +170,12 @@ try {
     else preparedCalls.push(id)
     const pass = route.request().url().includes('/pass-label/') && ['A', 'D'].includes(id)
       ? {surveyPass: 1} : {}
-    const variant = coadd ? {frameId: `${id}-coadd`, representation: 'coadd'} : {}
+    const variant = coadd ? {frameId: `${id}-coadd`, representation: 'coadd', contributors: [
+      {productId: 'coadd-source-A', archiveUrl: 'https://irsa.ipac.caltech.edu/ibe/data/coadd-source-A.fits',
+        startUtc: '2025-01-01T23:00:00Z', endUtc: '2025-01-01T23:01:00Z'},
+      {productId: 'coadd-source-B', archiveUrl: 'https://example.invalid/coadd-source-B.fits',
+        startUtc: '2025-01-01T23:02:00Z', endUtc: '2025-01-01T23:03:00Z'},
+    ]} : {}
     await route.fulfill({ json: envelope({...frame,...pass,...variant,imageUrl,coverageFraction:1,validFraction:1}) })
   })
   page.on('request', request => {
@@ -356,6 +361,12 @@ try {
   shared.searchParams.set('marks', JSON.stringify(selections))
   await page.goto(shared.href)
   await page.locator('#metadata').getByText('coadd', {exact: true}).waitFor()
+  const provenance = page.locator('#metadata')
+  await provenance.getByText('Contributing exposures (2)', {exact: true}).waitFor()
+  assert.equal(await provenance.getByRole('link', {name:'coadd-source-A'}).getAttribute('href'),
+    'https://irsa.ipac.caltech.edu/ibe/data/coadd-source-A.fits')
+  assert.equal(await provenance.getByRole('link', {name:'coadd-source-B'}).count(), 0)
+  await provenance.getByText('coadd-source-B · 2025-01-01 23:02:00 UTC to 2025-01-01 23:03:00 UTC', {exact: true}).waitFor()
   await page.locator('#layers-a .analysis-mark').waitFor({state:'attached'})
   await page.locator('#caption-b').filter({hasText: '2025-03-12 12:00:00 UTC'}).waitFor()
   assert.deepEqual(preparedCoadds, ['A'])

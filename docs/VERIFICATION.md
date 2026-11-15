@@ -140,3 +140,11 @@ Each discovery job now reserves a shared budget of 4,000 SIA rows across DR1 and
 A recovery probe for a previously covered non-preset position used one DR1 SIA request with `MAXREC=1` and timed out after 7.34 seconds. Both GitHub access paths still returned 404 for the project repository. Offline verification recovered one eligible centroid for Epsilon Indi B, while the available metadata yielded no compatible four-visit holdout sequence including it. [Science validation](SCIENCE_VALIDATION.md)
 
 The signed-out production browser passed the navigation and example checks. The rebuilt static fallback played an observation and restored its shared link on a phone viewport with zero API requests. Caddy retained PID 1817234.
+
+## Coadd provenance and source review
+
+Release `local-099c89b286feb68410c99fef` lists each contributing exposure and its UTC range in Frame details. The Chromium fixture verified both contributors on a restored coadd link and checked that only IRSA product addresses become links. The comparison suite passed on staging and public HTTPS. The staged example and mobile smoke checks passed.
+
+The archived metadata screen across the six example centers found 2,264 distinct same-series, same-visit, same-detector pairs within one hour. Of these, 2,248 had both passband estimates. The smallest estimated center gap was 0.861 times the narrower bandwidth, above the 0.5 limit. One bounded DR1 deep survey search at RA 276.26°, Dec +64.82° covering 2025-04-28 12:50–14:10 UTC timed out after 8.384 seconds. It made no cutout requests. The contributor UI and weighted-mean calculation passed controlled checks, while a real positive coadd remains unverified. [IRSA archive search reference](https://irsa.ipac.caltech.edu/spherex-archive-documentation/spherex-data-access/)
+
+Repository access recovered through the GitHub connector. Draft [PR #2](https://github.com/mt-evvi/Nsac/pull/2) contains the verified changes after the first release. Its initial head `190e37f3ac70df34687763925cff00954da39f10` passed [Verify SPHEREx](https://github.com/mt-evvi/Nsac/actions/runs/43760967005).

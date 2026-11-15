@@ -9,6 +9,7 @@ export type Frame = {
   visitId: string; surveyPass?: string | number; release: string; detector: number; archiveUrl: string
   imageUrl?: string; archiveDoi?: string; wavelengthUm?: number; bandwidthUm?: number; coverageFraction?: number; validFraction?: number
   flags?: string[]; warnings?: string[]; stretch?: number[]; representation?: string; coaddAnchor?: string
+  contributors?: {productId: string; archiveUrl: string; startUtc: string; endUtc: string}[]
 }
 export type Query = { raDeg: number; decDeg: number; fovArcmin: number; start?: string; end?: string; wavelengthUm?: number; detector?: number }
 export type Manifest = { seriesId: string; pipelineVersion?: string; query: Query; grid: {width: number; height: number; crpix: number[]; crval: number[]; cd: number[][]}; frames: Frame[]; count?: number; nextCursor?: string; counts: Record<string, number>; searchStatus: string }
@@ -693,6 +694,23 @@ function details(frame: Frame) {
   }
   if (frame.archiveDoi && /^10\.26131\/IRSA\d+$/.test(frame.archiveDoi)) {
     const citation = document.createElement('a'); citation.href = `https://doi.org/${frame.archiveDoi}`; citation.textContent = 'Release DOI ↗'; citation.className = 'doi'; item.append(citation)
+  }
+  if (frame.contributors?.length) {
+    const heading = document.createElement('p')
+    heading.textContent = `Contributing exposures (${frame.contributors.length})`
+    const sources = document.createElement('ul')
+    for (const contributor of frame.contributors) {
+      const entry = document.createElement('li')
+      if (contributor.archiveUrl.startsWith('https://irsa.ipac.caltech.edu/')) {
+        const source = document.createElement('a')
+        source.href = contributor.archiveUrl
+        source.textContent = contributor.productId
+        entry.append(source)
+      } else entry.append(contributor.productId)
+      entry.append(` · ${formatTime(contributor.startUtc)} to ${formatTime(contributor.endUtc)}`)
+      sources.append(entry)
+    }
+    item.append(heading, sources)
   }
   for (const warning of frame.warnings ?? []) { const p = document.createElement('p'); p.textContent = warning; item.append(p) }
 }
