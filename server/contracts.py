@@ -6,6 +6,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StringConstraints, model_validator
 
 ID = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$")]
+JOB_ID = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_-]{1,80}$")]
 RA = Annotated[float, Field(ge=0, lt=360, allow_inf_nan=False, strict=True)]
 Dec = Annotated[float, Field(ge=-90, le=90, allow_inf_nan=False, strict=True)]
 Wavelength = Annotated[float, Field(ge=0.7, le=5.1, strict=True)]

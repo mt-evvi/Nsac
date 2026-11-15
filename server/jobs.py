@@ -142,7 +142,7 @@ class Jobs:
             if sum(job.status == "queued" for job in self.by_id.values()) >= self.settings.queue_limit:
                 raise Problem("QUEUE_FULL", "The shared data queue is full. Try again shortly.", 503, True, 5)
             self._rate_limit(client, self.clock())
-            job = Job(secrets.token_urlsafe(15), key, work, stage, extended, priority, self.clock(), {session})
+            job = Job("j" + secrets.token_urlsafe(15), key, work, stage, extended, priority, self.clock(), {session})
             self.by_id[job.id] = job
             self.by_key[key] = job
             self.by_session[session] = job.id

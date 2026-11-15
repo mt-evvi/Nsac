@@ -13,7 +13,7 @@ from starlette.exceptions import HTTPException
 
 from .analysis_api import router as analysis_router
 from .config import SETTINGS
-from .contracts import ID, FrameOptions, Problem, SeriesQuery, ready
+from .contracts import ID, JOB_ID, FrameOptions, Problem, SeriesQuery, ready
 from .jobs import Jobs
 from .store import Store, content_key
 
@@ -275,12 +275,12 @@ def create_app(settings=SETTINGS):
                                 priority=2 if options.priority == "prefetch" else 0)
 
     @app.get("/api/v1/jobs/{job_id}")
-    def read_job(job_id: ID, request: Request):
+    def read_job(job_id: JOB_ID, request: Request):
         result = request.app.state.service.jobs.read(job_id)
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
     @app.delete("/api/v1/jobs/{job_id}", status_code=204)
-    def cancel_job(job_id: ID, request: Request):
+    def cancel_job(job_id: JOB_ID, request: Request):
         session, _ = session_info(request)
         request.app.state.service.jobs.abandon(job_id, session)
         return Response(status_code=204)

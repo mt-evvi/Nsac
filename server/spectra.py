@@ -201,5 +201,5 @@ def extract(manifest, options, linked, store):
     partial = not samples or len(entries) > len(samples) or any(s["sampleStatus"] == "missing" for s in samples)
     return {"mode": mode, "method": options["method"], "sources": 1, "samples": samples, "partial": partial,
             "units": "µJy", "referenceUrl": REFERENCE, "timeRange": date_window, "transferBytes": budget.bytes,
-            "warnings": ["This is an exposure-by-exposure extract. Samples may be from different visits and have not been validated against IRSA forced photometry."] +
+            "warnings": ["This is an exposure-by-exposure extract. Samples may come from different visits. A matched reference exposure agreed with IRSA forced photometry. Review the quality and uncertainty of each returned sample."] +
                         (["Coverage, masking, calibration availability or job limits left gaps in the spectrum."] if partial else [])}

@@ -161,3 +161,19 @@ def test_ten_concurrent_clients_coalesce_and_preserve_analysis_slot(tmp_path):
     finally:
         release.set()
         jobs.close()
+
+
+def test_random_job_ids_are_valid_for_polling_even_when_nonce_starts_with_punctuation(tmp_path, monkeypatch):
+    from pydantic import TypeAdapter
+
+    from server import jobs as job_module
+    from server.contracts import ID, JOB_ID
+
+    monkeypatch.setattr(job_module.secrets, 'token_urlsafe', lambda _: '_nonce-with-urlsafe-punctuation')
+    queue = Jobs(Settings(cache=tmp_path))
+    try:
+        job = queue.submit('key', 'local', 'session', 'test', lambda: ready({}))
+        assert TypeAdapter(ID).validate_python(job['jobId']) == 'j_nonce-with-urlsafe-punctuation'
+        assert TypeAdapter(JOB_ID).validate_python('_nonce-with-urlsafe-punctuation') == '_nonce-with-urlsafe-punctuation'
+    finally:
+        queue.close()
