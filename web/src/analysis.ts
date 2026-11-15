@@ -108,6 +108,7 @@ const link = (name: string, href: string) => {
 }
 const finite = (value: number | null | undefined): value is number => typeof value === 'number' && Number.isFinite(value)
 const format = (value: number | null | undefined, digits = 3) => finite(value) ? Number(value.toPrecision(digits)).toString() : '—'
+const measuredSpectrumSample = (sample: SpectrumSample) => sample.sampleStatus === 'measured' && finite(sample.flux)
 const cleanText = (problem: unknown) => problem instanceof Error ? problem.message : 'The operation did not complete.'
 const distinctWarnings = (...warnings: string[][]) => [...new Set(warnings.flat())]
 const isSciencePoint = (value: unknown): value is Pixel => {
@@ -179,6 +180,10 @@ export function installAnalysis(api: AnalysisApi) {
   coaddRegion.append(coadd, coaddCaption)
   $('metadata').after(coaddRegion)
   const catalogLabels: Record<Catalog, string> = {gaia_dr3: 'Gaia DR3', allwise: 'AllWISE'}
+  const catalogHelp: Record<Catalog, string> = {
+    gaia_dr3: 'The European Space Agency’s third Gaia data release maps stars. Green circles show their catalog positions, adjusted to the image date when motion is available.',
+    allwise: 'NASA’s WISE infrared survey measured these sources in 2010–2011. Pink squares show their historical catalog positions.',
+  }
   const selectedCatalogs = new Set<Catalog>()
   const catalogs = new Map<Catalog, Overlay>()
   const projections = new Map<string, Marker[]>()
@@ -258,7 +263,39 @@ export function installAnalysis(api: AnalysisApi) {
       showCatalogs()
       scheduleCatalogs()
     })
-    catalogRegion.append(label(catalogLabels[catalog], toggle))
+    const row = node('div')
+    row.className = 'catalog-toggle'
+    const choice = label(catalogLabels[catalog], toggle)
+    const marker = node('span')
+    marker.className = `catalog-key ${catalog}`
+    marker.setAttribute('aria-hidden', 'true')
+    choice.prepend(marker, toggle)
+    const help = node('div')
+    help.className = 'context-help'
+    const info = action('?')
+    info.className = 'info-button'
+    info.setAttribute('aria-label', `About ${catalogLabels[catalog]}`)
+    info.setAttribute('aria-expanded', 'false')
+    const description = node('p', catalogHelp[catalog])
+    description.id = `catalog-help-${catalog}`
+    description.className = 'help-bubble'
+    description.setAttribute('role', 'tooltip')
+    info.setAttribute('aria-describedby', description.id)
+    info.onclick = () => {
+      const pinned = info.getAttribute('aria-expanded') === 'true'
+      info.setAttribute('aria-expanded', String(!pinned))
+      help.dataset.dismissed = String(pinned)
+    }
+    info.onkeydown = event => {
+      if (event.key !== 'Escape') return
+      info.setAttribute('aria-expanded', 'false')
+      help.dataset.dismissed = 'true'
+    }
+    help.onpointerleave = () => { delete help.dataset.dismissed }
+    info.onblur = () => { delete help.dataset.dismissed }
+    help.append(info, description)
+    row.append(choice, help)
+    catalogRegion.append(row)
   }
   catalogRegion.append(catalogStatus, catalogRows)
 
@@ -806,12 +843,15 @@ export function installAnalysis(api: AnalysisApi) {
 
   const spectrumTarget = choose([['center', 'Field center'], ['point', 'Picked sky position'], ['candidate', 'Active detected candidate']])
   const spectrumMode = choose([['quick', 'Quick exposure spectrum'], ['extended', 'Extended exposure spectrum'], ['coadded_cube', 'DR1 coadded cube context']])
+  const spectrumModeInfo = node('p')
+  spectrumModeInfo.className = 'spectrum-mode-info'
   const spectrumMethod = choose([['aperture', 'Aperture photometry'], ['epsf', 'Effective PSF']])
   const spectrumMethodLabel = label('Photometry method', spectrumMethod)
   const pickSpectrum = action('Pick a sky position')
   const computeSpectrum = action('Extract spectrum')
   const spectrumStatus = statusLine()
   const spectrumOutput = node('div')
+  spectrumOutput.className = 'spectrum-output'
   const range = node('details')
   range.append(node('summary', 'Limit extraction'))
   const start = node('input'), end = node('input'), low = node('input'), high = node('input')
@@ -822,11 +862,14 @@ export function installAnalysis(api: AnalysisApi) {
   dates.append(label('From (UTC)', start), label('Through (UTC)', end))
   range.append(dates, label('Min wavelength (µm)', low), label('Max wavelength (µm)', high))
   spectrumRegion.append(label('Extract at', spectrumTarget), pickSpectrum, label('Spectrum source', spectrumMode),
-    spectrumMethodLabel, range, computeSpectrum, spectrumStatus, spectrumOutput)
+    spectrumModeInfo, spectrumMethodLabel, range, computeSpectrum, spectrumStatus, spectrumOutput)
 
   function refreshSpectrumTarget() {
     const isCube = spectrumMode.value === 'coadded_cube'
     spectrumMethodLabel.hidden = dates.hidden = isCube
+    spectrumModeInfo.textContent = isCube ? 'Show infrared brightness across 102 wavelength channels combined over multiple observations.' :
+      spectrumMode.value === 'extended' ? 'Check more observations and load calibration if needed. This can take longer.' :
+      'Check up to eight observations using calibration already available on the server.'
     spectrumTarget.options[1].disabled = !point
     spectrumTarget.options[2].disabled = !selectedCandidate || isCube
     if (spectrumTarget.selectedOptions[0]?.disabled) spectrumTarget.value = 'center'
@@ -860,23 +903,48 @@ export function installAnalysis(api: AnalysisApi) {
     }
     if (spectrumFor === 'candidate' && selectedCandidate) body.candidateId = selectedCandidate.candidateId
     else body.selectedSkyPosition = spectrumFor === 'point' && point ? {raDeg: point.raDeg, decDeg: point.decDeg} : {raDeg, decDeg}
-    void run(spectrumStatus, 'Extracting spectra in the requested bounds…', async signal => {
+    extractSpectrum(body)
+  }
+
+  function extractSpectrum(body: Record<string, unknown>) {
+    void run(spectrumStatus, 'Measuring infrared brightness…', async signal => {
       const response = await api.data<Spectrum>(path('spectra'), signal, body, false)
       if (signal.aborted) return
-      spectrumStatus.textContent = response.status === 'partial' ? 'Partial spectrum. Unavailable bins are listed below.' : 'Spectrum ready.'
-      displaySpectrum(response.data, response.warnings)
+      spectrumStatus.textContent = response.status === 'partial' ? 'Extraction finished with gaps.' : 'Extraction complete.'
+      displaySpectrum(response.data, response.warnings, body)
     }, 'series')
   }
 
-  function displaySpectrum(spectrum: Spectrum, warnings: string[]) {
+  function displaySpectrum(spectrum: Spectrum, warnings: string[], body: Record<string, unknown>) {
     spectrumOutput.replaceChildren()
     const samples = spectrum.samples
-    const usable = samples.filter(sample => sample.sampleStatus === 'measured' && finite(sample.wavelengthUm) && finite(sample.flux))
-    spectrumOutput.append(node('p', spectrum.mode === 'coadded_cube' ?
-      'DR1 coadded spectral context. Channels have no individual observation date.' :
-      'Exposure spectrum. Each sample has its own observation date.'))
-    if (usable.length) spectrumOutput.append(plotSpectrum(samples, spectrum.units))
-    else spectrumOutput.append(node('p', 'No measured spectral samples are available in these bounds.'))
+    const usable = samples.filter(measuredSpectrumSample)
+    const calibrationMissing = body.mode === 'quick' && samples.some(sample =>
+      !measuredSpectrumSample(sample) && /extended spectrum|calibrat.*not cached/i.test(sample.reason ?? ''))
+    if (samples.length) spectrumOutput.append(spectrumCoverage(samples))
+    else spectrumOutput.append(node('p', 'No samples were available for this position and range.'))
+    if (usable.some(sample => finite(sample.wavelengthUm))) {
+      spectrumOutput.append(plotSpectrum(usable, spectrum.units))
+    } else if (samples.length) {
+      const empty = node('div')
+      empty.className = 'spectrum-empty'
+      empty.append(node('strong', 'No brightness measurements'), node('p', calibrationMissing ?
+        'The quick check could not use the detector calibration for this selection.' :
+        'The sample list shows where coverage or data quality prevented a measurement.'))
+      if (spectrum.mode !== 'coadded_cube') empty.append(node('p',
+        'For a wider range of wavelengths, choose the DR1 coadded cube. It combines multiple observations.'))
+      spectrumOutput.append(empty)
+    }
+    if (calibrationMissing) {
+      const retry = action('Retry with extended extraction')
+      retry.className = 'spectrum-retry'
+      retry.onclick = () => {
+        spectrumMode.value = 'extended'
+        refreshSpectrumTarget()
+        extractSpectrum({...body, mode: 'extended'})
+      }
+      spectrumOutput.append(retry)
+    }
     const lightCurve = matchedLightCurve(usable)
     if (lightCurve.length >= 2) {
       const panel = node('details')
@@ -884,11 +952,11 @@ export function installAnalysis(api: AnalysisApi) {
         `Detector ${lightCurve[0].detector} · one fitted flux per independent visit.`), plotSpectrum(lightCurve, spectrum.units, true))
       spectrumOutput.append(panel)
     }
-    for (const warning of distinctWarnings(spectrum.warnings ?? [], warnings)) spectrumOutput.append(node('p', warning))
     const table = node('table')
     table.className = 'sample-table'
     const headers = node('thead'), header = node('tr')
-    for (const name of ['Wavelength', `Flux (${spectrum.units})`, 'Observation / quality']) {
+    const headings = ['Wavelength', `Brightness (${spectrum.units})`, 'Observation']
+    for (const name of headings) {
       const th = node('th', name)
       th.scope = 'col'
       header.append(th)
@@ -898,19 +966,32 @@ export function installAnalysis(api: AnalysisApi) {
     const rows = node('tbody')
     for (const sample of samples) {
       const row = node('tr')
-      const wave = sample.wavelengthUm == null ? '—' :
-        `${format(sample.wavelengthUm, 4)} µm${finite(sample.bandwidthUm) ? ' · Δ' + format(sample.bandwidthUm) : ''}`
-      const flux = finite(sample.flux) ?
-        `${format(sample.flux)}${finite(sample.error) ? ' ± ' + format(sample.error) : ''}` : '—'
-      const quality = [sample.startUtc ?? (sample.channel != null ? `Channel ${sample.channel}` : ''), sample.reason, sample.productId]
-        .filter(Boolean).join(' · ')
-      row.append(node('td', wave), node('td', flux), node('td', quality))
+      const wave = node('td', finite(sample.wavelengthUm) ? `${format(sample.wavelengthUm, 4)} µm` : 'Unavailable')
+      if (finite(sample.bandwidthUm)) wave.append(node('small', `${format(sample.bandwidthUm)} µm band`))
+      const flux = node('td', measuredSpectrumSample(sample) ?
+        `${format(sample.flux)}${finite(sample.error) ? ' ± ' + format(sample.error) : ''}` : 'Unavailable')
+      const observation = node('td', sample.startUtc ? `${sample.startUtc.slice(0, 10)} UTC` :
+        sample.channel != null ? `Channel ${sample.channel}` : '—')
+      if (sample.startUtc) observation.append(node('small', sample.startUtc.split('T')[1]?.replace(/Z$/, ' UTC')))
+      if (sample.reason) observation.append(node('small', sample.reason))
+      if (sample.productId) observation.append(node('small', sample.productId))
+      for (const [index, cell] of [wave, flux, observation].entries()) cell.dataset.label = headings[index]
+      row.append(wave, flux, observation)
       rows.append(row)
     }
     table.append(rows)
-    const details = node('details')
-    details.append(node('summary', `Spectral samples (${samples.length})`), table)
-    spectrumOutput.append(details, link('IRSA spectrum reference ↗', spectrum.referenceUrl))
+    if (samples.length) {
+      const details = node('details')
+      details.append(node('summary', `Spectral samples (${samples.length})`), table)
+      spectrumOutput.append(details)
+    }
+    const notes = node('details')
+    notes.append(node('summary', 'Method and data notes'), node('p', spectrum.mode === 'coadded_cube' ?
+      'The DR1 cube combines exposures, so individual channels have no observation date.' :
+      'The measurement date can vary from one wavelength to the next.'))
+    for (const warning of distinctWarnings(spectrum.warnings ?? [], warnings)) notes.append(node('p', warning))
+    notes.append(link('IRSA spectrum reference ↗', spectrum.referenceUrl))
+    spectrumOutput.append(notes)
     if (spectrum.archiveDoi && /^10\.26131\/IRSA\d+$/.test(spectrum.archiveDoi)) {
       spectrumOutput.append(link('Spectral product DOI ↗', `https://doi.org/${spectrum.archiveDoi}`))
     }
@@ -1084,61 +1165,97 @@ export function matchedLightCurve(samples: SpectrumSample[]) {
   return best.sort((a, b) => Date.parse(a.startUtc!) - Date.parse(b.startUtc!))
 }
 
+function spectrumCoverage(samples: SpectrumSample[]) {
+  const coverage = node('section')
+  coverage.className = 'spectrum-coverage'
+  const measured = samples.filter(measuredSpectrumSample).length
+  const available = node('div')
+  available.className = 'spectrum-coverage-label'
+  available.append(node('strong', `${measured} of ${samples.length} samples measured`))
+  const strip = node('div')
+  strip.className = 'spectrum-coverage-strip'
+  strip.setAttribute('aria-hidden', 'true')
+  const sorted = [...samples].sort((a, b) => (a.wavelengthUm ?? Infinity) - (b.wavelengthUm ?? Infinity))
+  for (const [index, sample] of sorted.entries()) {
+    const measured = measuredSpectrumSample(sample)
+    const cell = node('span')
+    cell.className = measured ? 'spectrum-measured' : 'spectrum-missing'
+    const name = finite(sample.wavelengthUm) ? `${format(sample.wavelengthUm, 4)} µm` : `Sample ${index + 1}`
+    cell.title = `${name} · ${measured ? 'Measured' : sample.reason || 'Unavailable'}`
+    strip.append(cell)
+  }
+  const legend = node('div')
+  legend.className = 'spectrum-legend'
+  for (const [className, label] of [['spectrum-measured', 'Measured'], ['spectrum-missing', 'Unavailable']]) {
+    const item = node('span', label)
+    const swatch = node('i')
+    swatch.className = className
+    swatch.setAttribute('aria-hidden', 'true')
+    item.prepend(swatch)
+    legend.append(item)
+  }
+  coverage.append(available, strip, legend)
+  return coverage
+}
+
 function plotSpectrum(samples: SpectrumSample[], units: string, byDate = false) {
-  const plot = node('canvas')
-  plot.className = 'spectrum-plot'
-  plot.width = 600
-  plot.height = 340
-  plot.setAttribute('role', 'img')
-  plot.setAttribute('aria-label', `Flux in ${units} by ${byDate ? 'UTC observation time' : 'wavelength'}. See the sample table for precise values.`)
-  const context = plot.getContext('2d')!
+  const chart = node('figure')
+  chart.className = 'spectrum-chart'
   const position = (sample: SpectrumSample) => byDate ? Date.parse(sample.startUtc ?? '') : sample.wavelengthUm
-  const measured = samples.filter(sample => finite(position(sample)) && finite(sample.flux))
-  const positions = samples.map(position).filter(finite)
-  const left = 80, right = 576, top = 26, bottom = 272
-  const minimum = Math.min(...positions)
-  const span = Math.max(byDate ? 86400000 : .02, Math.max(...positions) - minimum)
-  const fluxes = measured.flatMap(sample => [sample.flux! - (sample.error ?? 0), sample.flux! + (sample.error ?? 0)])
-  const minFlux = Math.min(...fluxes)
-  const fluxSpan = Math.max(1e-7, Math.max(...fluxes) - minFlux)
-  const x = (value: number) => left + 12 + (right - left - 24) * (value - minimum) / span
-  const y = (value: number) => bottom - 12 - (bottom - top - 24) * (value - minFlux) / fluxSpan
-  context.font = '20px system-ui'
-  context.fillStyle = '#b9c7d9'
-  context.fillText(units, left, top)
-  context.fillText(byDate ? 'UTC observation date' : 'Wavelength (µm)', 218, 324)
-  context.strokeStyle = '#50617a'
-  context.beginPath()
-  context.moveTo(left, top + 8)
-  context.lineTo(left, bottom)
-  context.lineTo(right, bottom)
-  context.stroke()
-  for (const value of [minimum, minimum + span]) {
-    const caption = byDate ? new Date(value).toISOString().slice(0, 10) : format(value)
-    context.fillText(caption, Math.min(x(value) - 14, right - context.measureText(caption).width), bottom + 26)
+  const data = samples.flatMap(sample => {
+    const x = position(sample)
+    if (!finite(x) || !finite(sample.flux)) return []
+    return [{x, y: sample.flux, error: finite(sample.error) && sample.error >= 0 ? sample.error : 0}]
+  })
+  const hasErrors = data.some(sample => sample.error > 0)
+  const bounds = (values: number[], minSpan: number) => {
+    const lo = Math.min(...values), hi = Math.max(...values)
+    const padding = Math.max((hi - lo) * .04, (minSpan - (hi - lo)) / 2)
+    return [lo - padding, hi + padding]
   }
-  for (const value of [minFlux, minFlux + fluxSpan]) context.fillText(format(value), 3, y(value) + 7)
-  for (const sample of samples) {
-    const timeOrWave = position(sample)
-    if (!finite(timeOrWave)) continue
-    const column = x(timeOrWave)
-    if (!finite(sample.flux)) {
-      context.fillStyle = '#ebad86'
-      context.fillRect(column - 1, bottom - 7, 3, 7)
-      continue
+  const [firstX, lastX] = bounds(data.map(sample => sample.x), byDate ? 86400000 : .02)
+  const [firstY, lastY] = bounds(data.flatMap(sample => [sample.y - sample.error, sample.y + sample.error]),
+    Math.max(Math.abs(data[0].y) * .08, 1e-7))
+  const xPercent = (value: number) => 100 * (value - firstX) / (lastX - firstX)
+  const yPercent = (value: number) => 100 * (lastY - value) / (lastY - firstY)
+  const showX = (value: number) => byDate ? new Date(value).toISOString().slice(0, 10) : format(value, 4)
+
+  chart.append(node('figcaption', `Brightness (${units})`))
+  const graphic = node('div')
+  graphic.className = 'spectrum-chart-area'
+  graphic.setAttribute('role', 'img')
+  const axis = byDate ? 'UTC observation date' : 'Wavelength (µm)'
+  graphic.setAttribute('aria-label', `${data.length} brightness measurements by ${axis.toLowerCase()}. See spectral samples for exact values.`)
+  const yAxis = node('div')
+  yAxis.className = 'spectrum-y-axis'
+  for (const value of [lastY, (lastY + firstY) / 2, firstY]) yAxis.append(node('span', format(value, 4)))
+  const points = node('div')
+  points.className = 'spectrum-points'
+  points.setAttribute('aria-hidden', 'true')
+  for (const sample of data) {
+    if (sample.error > 0) {
+      const error = node('span')
+      error.className = 'spectrum-error-bar'
+      error.style.left = `${xPercent(sample.x)}%`
+      error.style.top = `${yPercent(sample.y + sample.error)}%`
+      error.style.height = `${yPercent(sample.y - sample.error) - yPercent(sample.y + sample.error)}%`
+      points.append(error)
     }
-    const row = y(sample.flux)
-    context.fillStyle = '#87e3e8'
-    context.strokeStyle = '#87e3e8'
-    if (finite(sample.error)) {
-      context.beginPath()
-      context.moveTo(column, y(sample.flux - sample.error))
-      context.lineTo(column, y(sample.flux + sample.error))
-      context.stroke()
-    }
-    context.beginPath()
-    context.arc(column, row, 3.5, 0, 2 * Math.PI)
-    context.fill()
+    const point = node('span')
+    point.className = 'spectrum-point'
+    point.style.left = `${xPercent(sample.x)}%`
+    point.style.top = `${yPercent(sample.y)}%`
+    const uncertainty = sample.error > 0 ? ` ± ${format(sample.error, 4)}` : ''
+    point.title = `${showX(sample.x)}${byDate ? ' UTC' : ' µm'} · ${format(sample.y, 4)}${uncertainty} ${units}`
+    points.append(point)
   }
-  return plot
+  const xAxis = node('div')
+  xAxis.className = 'spectrum-x-axis'
+  xAxis.append(node('span', showX(firstX)), node('span', showX(lastX)))
+  const xLabel = node('p', axis)
+  xLabel.className = 'spectrum-x-label'
+  graphic.append(yAxis, points, xAxis, xLabel)
+  chart.append(graphic)
+  if (hasErrors) chart.append(node('small', 'Vertical bars show measurement uncertainty.'))
+  return chart
 }

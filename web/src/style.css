@@ -1,4 +1,5 @@
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500;600;700&display=swap');
+@import './spectrum.css';
 
 :root { color-scheme: dark; font: 15px/1.5 Inter, system-ui, sans-serif; color: #e6edf5; background: #0d141e; --surface: #121c29; --raised: #192635; --line: #2a3c4f; --muted: #a5b5c8; --cyan: #8ae1e5; --mono: 'IBM Plex Mono', monospace; }
 * { box-sizing: border-box; }
@@ -51,6 +52,9 @@ h2 { font-size: clamp(1.6rem, 4vw, 2.3rem); }
 .frame { position: relative; width: min(100%, 555px); height: 100%; overflow: hidden; touch-action: none; }
 .frame canvas, .layers { position: absolute; display: block; inset: 0; width: 100%; height: 100%; }
 .layers { pointer-events: none; }
+#images[data-pannable=true] .frame { cursor: grab; }
+#images[data-pannable=true] .frame.dragging { cursor: grabbing; }
+#images.marking .frame { cursor: crosshair; }
 .caption, .orientation, .image-tools { position: absolute; font: 500 .75rem var(--mono); background: #111b26e8; border: 1px solid #405267; border-radius: 5px; padding: 6px 8px; color: #e3f2fe; }
 .caption { left: 8px; top: 8px; pointer-events: none; }
 .orientation { top: 8px; right: 8px; line-height: 1.4; pointer-events: none; }
@@ -58,6 +62,19 @@ h2 { font-size: clamp(1.6rem, 4vw, 2.3rem); }
 .image-tools button { min-height: 35px; padding-inline: 9px; }
 .empty-image { position: absolute; text-align: center; color: #8fa4bf; pointer-events: none; }
 .empty-image span { font-size: 52px; color: #6fa2aa; line-height: 1; }
+.viewer-guide { display: none; padding: 10px 14px; gap: 10px; border-bottom: 1px solid var(--line); background: #101a26; color: var(--muted); font-size: .82rem; }
+.viewer:has(#image-tools:not([hidden])) .viewer-guide { display: grid; }
+#image-instructions { display: flex; align-items: baseline; flex-wrap: wrap; gap: 1px 8px; margin: 0; }
+.image-key { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 7px 18px; }
+.intensity-guide { display: inline-flex; align-items: center; gap: 7px; }
+.intensity-ramp { width: 45px; height: 8px; border: 1px solid #6f8193; border-radius: 2px; background: linear-gradient(90deg,#111,#eee); }
+.viewer:has(#heatmap-legend:not([hidden])) .intensity-guide { display: none; }
+#image-instructions strong, .mask-guide summary { color: #dceaf5; font-weight: 600; }
+.mask-guide summary { display: flex; align-items: center; gap: 7px; width: fit-content; list-style: none; }
+.mask-guide summary::after { content: '▸'; color: var(--cyan); }
+.mask-guide[open] summary::after { content: '▾'; }
+.mask-guide p { max-width: 54ch; margin: 6px 0 0; }
+.mask-swatch { width: 21px; height: 16px; border: 1px solid #46566c; border-radius: 3px; background: repeating-linear-gradient(45deg,#141c29 0 4px,#263244 4px 6px); }
 .timeline { padding: 14px; }
 .timeline-top, .date-range { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 5px; }
 .calendar { position: relative; height: 20px; margin: 6px 6px 0; background: linear-gradient(transparent 47%, var(--line) 47%, var(--line) 53%, transparent 53%); }
@@ -73,6 +90,7 @@ h2 { font-size: clamp(1.6rem, 4vw, 2.3rem); }
 .inspector summary { padding: 12px 14px; font-weight: 600; }
 .inspector details[open] summary { border-bottom: 1px solid var(--line); }
 .detail-body { padding: 12px 14px; color: var(--muted); font-size: .87rem; overflow-wrap: anywhere; }
+.tool-intro { margin: 12px 14px 0; color: var(--muted); font-size: .85rem; }
 .detail-body p:last-child { margin-bottom: 0; }
 .detail-body dl { display: grid; grid-template-columns: minmax(64px, max-content) 1fr; gap: 5px 10px; margin: 0 0 8px; }
 .detail-body dt { color: var(--muted); }
@@ -89,10 +107,15 @@ h2 { font-size: clamp(1.6rem, 4vw, 2.3rem); }
 .marker { position: absolute; width: 13px; height: 13px; border: 1.5px solid #67e9db; border-radius: 50%; transform: translate(-50%, -50%); }
 .marker.gaia_dr3 { border-color: #6cf6aa; }
 .marker.allwise { border-color: #fea8d5; border-radius: 1px; }
-.marking .frame { cursor: crosshair; }
-.spectrum-plot { width: 100%; background: #0d141e; border: 1px solid var(--line); border-radius: 5px; }
-.sample-table { width: 100%; border-collapse: collapse; font: .73rem var(--mono); }
-.sample-table :is(th,td) { text-align: left; padding: 5px 3px; border-bottom: 1px solid var(--line); }
+#catalog-controls .catalog-toggle { padding: 4px 8px; border: 1px solid var(--line); border-radius: 7px; background: #162231; display: flex; justify-content: space-between; align-items: center; gap: 7px; }
+#catalog-panel[open] { overflow: visible; }
+#catalog-controls .catalog-toggle label { display: flex; align-items: center; gap: 8px; color: #e6edf5; font-size: .88rem; min-height: 34px; cursor: pointer; }
+.catalog-key { display: block; width: 11px; height: 11px; border: 1.5px solid #6cf6aa; border-radius: 50%; }
+.catalog-key.allwise { border-color: #fea8d5; border-radius: 1px; }
+.context-help { position: relative; }
+.context-help .info-button { display: grid; place-items: center; width: 30px; min-height: 30px; padding: 0; border-radius: 50%; color: var(--cyan); }
+.context-help .help-bubble { position: absolute; z-index: 3; top: calc(100% + 5px); right: 0; width: min(244px,65vw); margin: 0; padding: 9px 11px; border: 1px solid #53748a; border-radius: 6px; background: #1b2c3c; box-shadow: 0 5px 18px #0008; color: #edf6ff; font-size: .82rem; visibility: hidden; opacity: 0; transition: opacity .12s; }
+.context-help:not([data-dismissed=true]):is(:hover,:focus-within,:has([aria-expanded=true])) .help-bubble { visibility: visible; opacity: 1; }
 footer { border-top: 1px solid var(--line); padding-block: 14px 20px; color: var(--muted); font-size: .82rem; }
 @media (max-width: 780px) { .workbench { grid-template-columns: 1fr; } .images { height: min(85vw, 520px); } }
 @media (max-width: 590px) { main, footer { width: calc(100% - 24px); } .topbar { min-height: 56px; padding-inline: 12px; } .topbar button { font-size: .79rem; padding-inline: 8px; } .query { padding-top: 23px; } .coordinates, .filter-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); } .presets span { width: 100%; } .images { min-height: 265px; } .workspace { padding-top: 17px; } .timeline, .detail-body { padding-inline: 10px; } .caption { max-width: 88%; font-size: .65rem; } .orientation { font-size: .65rem; } }

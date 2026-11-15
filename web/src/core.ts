@@ -46,7 +46,7 @@ let playing = false
 let timekeeper = 0
 let debounce = 0
 let zoom = 1
-let pan = [0, 0]
+let pan = {x: 0, y: 0}
 let comparisonAsset: ImageBitmap | undefined
 let blinkB = false
 let blinkTimer = 0
@@ -359,8 +359,31 @@ async function readImage(url: string, signal: AbortSignal, priority: 'auto' | 'l
 }
 function transform(canvas: HTMLCanvasElement) {
   const { width, height } = canvas.getBoundingClientRect()
-  const size = Math.min(width, height) * zoom
-  return { width, height, size, left: (width - size) / 2 + pan[0], top: (height - size) / 2 + pan[1] }
+  const base = Math.min(width, height)
+  const size = base * zoom
+  return { width, height, size, left: (width - size) / 2 + pan.x * base, top: (height - size) / 2 + pan.y * base }
+}
+function resetViewport() {
+  zoom = 1
+  pan = {x: 0, y: 0}
+  redraw()
+}
+function viewportPoint(canvas: HTMLCanvasElement, client: {x: number; y: number}) {
+  const bounds = canvas.getBoundingClientRect()
+  const base = Math.min(bounds.width, bounds.height)
+  return base ? {x: (client.x - bounds.left - bounds.width / 2) / base, y: (client.y - bounds.top - bounds.height / 2) / base}
+    : {x: 0, y: 0}
+}
+function updateViewport(nextZoom: number, from = {x: 0, y: 0}, to = from) {
+  const bounded = Math.max(1, Math.min(8, nextZoom))
+  const ratio = bounded / zoom
+  const edge = (bounded - 1) / 2
+  pan = {
+    x: Math.max(-edge, Math.min(edge, to.x - (from.x - pan.x) * ratio)),
+    y: Math.max(-edge, Math.min(edge, to.y - (from.y - pan.y) * ratio)),
+  }
+  zoom = bounded
+  redraw()
 }
 function paint(canvas: HTMLCanvasElement, image?: ImageBitmap, adjustContrast = true) {
   const { width, height, size, left, top } = transform(canvas)
@@ -386,6 +409,7 @@ function paint(canvas: HTMLCanvasElement, image?: ImageBitmap, adjustContrast = 
   }
 }
 function redraw() {
+  el('images').dataset.pannable = String(Boolean(rendered) && zoom > 1)
   el('contrast-control').hidden = !rendered || Boolean(comparisonAsset)
   paint(canvasA, comparisonAsset ?? (viewMode === 'blink' && blinkB ? renderedPair : rendered), !comparisonAsset)
   if (viewMode === 'side') paint(canvasB, renderedPair)
@@ -669,7 +693,7 @@ async function loadIndex(query: Query, example: string | undefined, fromLink = f
   }
   const restoredMode = fromLink ? viewMode : 'single'
   setMode('single')
-  zoom = 1; pan = [0, 0]; redraw()
+  resetViewport()
   preset = example
   for (const id of ['timeline-panel', 'pair-panel', 'image-tools', 'contrast-control', 'share']) el(id).hidden = true
   el('image-empty').hidden = false
@@ -842,9 +866,9 @@ slider.addEventListener('input', () => {
 })
 slider.addEventListener('change', () => { if (dragging) { dragging = false; window.clearTimeout(debounce); void choose(Number(slider.value)) } })
 slider.addEventListener('pointercancel', () => { dragging = false })
-button('zoom-in').addEventListener('click', () => { zoom = Math.min(8, zoom * 1.5); redraw() })
-button('zoom-out').addEventListener('click', () => { zoom = Math.max(1, zoom / 1.5); if (zoom === 1) pan = [0, 0]; redraw() })
-button('reset-view').addEventListener('click', () => { zoom = 1; pan = [0, 0]; redraw() })
+button('zoom-in').addEventListener('click', () => updateViewport(zoom * 1.5))
+button('zoom-out').addEventListener('click', () => updateViewport(zoom / 1.5))
+button('reset-view').addEventListener('click', resetViewport)
 button('reset-contrast').addEventListener('click', () => { input('contrast').value = '1'; redraw() })
 input('contrast').addEventListener('input', redraw)
 button('share').addEventListener('click', async () => {
@@ -852,17 +876,63 @@ button('share').addEventListener('click', async () => {
   try { await navigator.clipboard.writeText(location.href); note('Share link copied.') }
   catch { note('Copy the address from your browser to share this view.') }
 })
-for (const id of ['frame-a', 'frame-b']) {
-  const pane = el(id)
-  let start: [number, number] | undefined
+for (const [pane, canvas] of [[el('frame-a'), canvasA], [el('frame-b'), canvasB]] as const) {
+  const pointers = new Map<number, {x: number; y: number}>()
+  const canNavigate = () => Boolean(rendered) && !el('images').classList.contains('marking')
+  const clientPoint = (event: MouseEvent) => ({x: event.clientX, y: event.clientY})
+  const pinch = () => {
+    const [a, b] = [...pointers.values()]
+    return {center: {x: (a.x + b.x) / 2, y: (a.y + b.y) / 2}, distance: Math.hypot(a.x - b.x, a.y - b.y)}
+  }
+  pane.addEventListener('wheel', event => {
+    if (!canNavigate() || !event.deltaY) return
+    event.preventDefault()
+    const pixels = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? pane.clientHeight : 1)
+    const factor = Math.exp(-Math.max(-300, Math.min(300, pixels)) * .002)
+    updateViewport(zoom * factor, viewportPoint(canvas, clientPoint(event)))
+  }, {passive: false})
   pane.addEventListener('pointerdown', event => {
-    if (zoom === 1 || el('images').classList.contains('marking')) return
-    start = [event.clientX - pan[0], event.clientY - pan[1]]; pane.setPointerCapture(event.pointerId)
+    if (!canNavigate() || event.button !== 0 || pointers.size >= 2 || (zoom === 1 && event.pointerType !== 'touch')) return
+    pointers.set(event.pointerId, clientPoint(event))
+    pane.setPointerCapture(event.pointerId)
+    pane.classList.toggle('dragging', zoom > 1 || pointers.size === 2)
   })
   pane.addEventListener('pointermove', event => {
-    if (start) { pan = [event.clientX - start[0], event.clientY - start[1]]; redraw() }
+    const previous = pointers.get(event.pointerId)
+    if (!previous || !canNavigate()) return
+    const current = clientPoint(event)
+    if (pointers.size === 1) {
+      pointers.set(event.pointerId, current)
+      if (zoom > 1) updateViewport(zoom, viewportPoint(canvas, previous), viewportPoint(canvas, current))
+      return
+    }
+    const before = pinch()
+    pointers.set(event.pointerId, current)
+    const after = pinch()
+    if (before.distance > 0) {
+      updateViewport(zoom * after.distance / before.distance, viewportPoint(canvas, before.center), viewportPoint(canvas, after.center))
+    }
   })
-  pane.addEventListener('lostpointercapture', () => { start = undefined })
+  const release = (event: PointerEvent) => {
+    pointers.delete(event.pointerId)
+    if (!pointers.size) pane.classList.remove('dragging')
+  }
+  pane.addEventListener('pointerup', release)
+  pane.addEventListener('pointercancel', release)
+  pane.addEventListener('lostpointercapture', release)
+  pane.addEventListener('keydown', event => {
+    if (!canNavigate() || event.altKey || event.ctrlKey || event.metaKey) return
+    const movement: Record<string, {x: number; y: number}> = {
+      ArrowLeft: {x: .08, y: 0}, ArrowRight: {x: -.08, y: 0},
+      ArrowUp: {x: 0, y: .08}, ArrowDown: {x: 0, y: -.08},
+    }
+    if (event.key === '+' || event.key === '=') updateViewport(zoom * 1.5)
+    else if (event.key === '-') updateViewport(zoom / 1.5)
+    else if (event.key === '0') resetViewport()
+    else if (zoom > 1 && movement[event.key]) updateViewport(zoom, {x: 0, y: 0}, movement[event.key])
+    else return
+    event.preventDefault()
+  })
 }
 new ResizeObserver(redraw).observe(el('images'))
 window.addEventListener('popstate', readLocation)

@@ -131,10 +131,22 @@ try {
         sign: 'negative', pixel: {x: 14, y: 11}, raDeg: 46.01, decDeg: 0.02, snr: 7.4},
     ],
   })}))
-  await page.route('**/api/v1/series/paginated/spectra', route => route.fulfill({json: envelope({
-    mode: 'coadded_cube', units: 'MJy/sr', samples: [], warnings: [], archiveDoi: '10.26131/IRSA679',
-    referenceUrl: 'https://irsa.ipac.caltech.edu/data/SPHEREx/docs/overview_dr1.html',
-  })}))
+  const spectrumRequests = []
+  await page.route('**/api/v1/series/paginated/spectra', route => {
+    const request = route.request().postDataJSON()
+    spectrumRequests.push(request)
+    if (request.mode === 'coadded_cube') return route.fulfill({json: envelope({
+      mode: 'coadded_cube', units: 'MJy/sr', samples: [], warnings: [], archiveDoi: '10.26131/IRSA679',
+      referenceUrl: 'https://irsa.ipac.caltech.edu/data/SPHEREx/docs/overview_dr1.html',
+    })})
+    const missing = {wavelengthUm: 2.49, startUtc: frames[0].startUtc, sampleStatus: 'missing',
+      reason: 'Try an extended spectrum to load the detector calibration.'}
+    const samples = request.mode === 'quick' ? [missing] : [missing,
+      {wavelengthUm: 2.51, startUtc: frames[4].startUtc, sampleStatus: 'measured', flux: 900, error: 40},
+      {wavelengthUm: 2.62, startUtc: frames[4].startUtc, sampleStatus: 'measured', flux: 970, error: 60}]
+    return route.fulfill({json: {...envelope({mode: request.mode, units: 'µJy', samples, warnings: [],
+      referenceUrl: 'https://irsa.ipac.caltech.edu/onlinehelp/spherex/spherex/sp.html'}), status: 'partial'}})
+  })
   await page.route('**/api/v1/series/paginated/tracks', route => {
     const {marks} = route.request().postDataJSON()
     requestedTracks.push(marks)
@@ -232,6 +244,54 @@ try {
   await page.getByRole('checkbox', {name:'Include the two marks in the share link'}).check()
   const sharedMarks = () => JSON.parse(new URL(page.url()).searchParams.get('marks'))
   const original = sharedMarks().marks.find(mark => mark.frameId === 'A')
+  const frameA = page.locator('#frame-a')
+  const frameB = page.locator('#frame-b')
+  await frameA.scrollIntoViewIfNeeded()
+  const boxA = await frameA.boundingBox()
+  const boxB = await frameB.boundingBox()
+  const centerA = {x: boxA.x + boxA.width / 2, y: boxA.y + boxA.height / 2}
+  const centerB = {x: boxB.x + boxB.width / 2, y: boxB.y + boxB.height / 2}
+  const marker = async (pane, box) => page.locator(`#layers-${pane} .analysis-mark`).evaluate((node, {w, h}) => {
+    const base = Math.min(w, h)
+    return {x: (parseFloat(node.style.left) - w / 2) / base, y: (parseFloat(node.style.top) - h / 2) / base}
+  }, {w: box.width, h: box.height})
+  const a0 = await marker('a', boxA), b0 = await marker('b', boxB)
+  const sourceA = page.locator('#layers-a .analysis-mark')
+  const sourceBox = await sourceA.boundingBox()
+  await page.mouse.move(sourceBox.x + sourceBox.width / 2, sourceBox.y + sourceBox.height / 2)
+  await page.mouse.wheel(0, -260)
+  await page.waitForFunction(() => document.querySelector('#images').dataset.pannable === 'true', undefined, {timeout:3000})
+  const a1 = await marker('a', boxA), b1 = await marker('b', boxB)
+  assert.ok(Math.hypot(a1.x - a0.x, a1.y - a0.y) < .015, 'Wheel keeps the chosen sky position beneath the pointer')
+  assert.ok(Math.hypot(b1.x - b0.x, b1.y - b0.y) > .015, 'Wheel changes the linked second pane')
+  await page.mouse.move(centerB.x, centerB.y)
+  await page.mouse.down()
+  await page.mouse.move(centerB.x + 24, centerB.y + 14, {steps:3})
+  await page.mouse.up()
+  const a2 = await marker('a', boxA), b2 = await marker('b', boxB)
+  assert.ok(a2.x > a1.x && a2.y > a1.y, 'Dragging B pans A too')
+  assert.ok(Math.abs((a2.x - a1.x) - (b2.x - b1.x)) < .001)
+  assert.ok(Math.abs((a2.y - a1.y) - (b2.y - b1.y)) < .001)
+  assert.equal(sharedMarks().marks.find(mark => mark.frameId === 'A').pixel.x, original.pixel.x)
+  await frameA.focus()
+  await page.keyboard.press('0')
+  assert.deepEqual(await marker('a', boxA), a0)
+  assert.deepEqual(await marker('b', boxB), b0)
+  const cdp = await page.context().newCDPSession(page)
+  await cdp.send('Emulation.setTouchEmulationEnabled', {enabled:true,maxTouchPoints:2})
+  await cdp.send('Input.dispatchTouchEvent', {type:'touchStart',touchPoints:[
+    {id:1,x:centerA.x - 30,y:centerA.y}, {id:2,x:centerA.x + 30,y:centerA.y},
+  ]})
+  await cdp.send('Input.dispatchTouchEvent', {type:'touchMove',touchPoints:[
+    {id:1,x:centerA.x - 55,y:centerA.y}, {id:2,x:centerA.x + 55,y:centerA.y},
+  ]})
+  await cdp.send('Input.dispatchTouchEvent', {type:'touchEnd',touchPoints:[]})
+  await page.waitForFunction(() => document.querySelector('#images').dataset.pannable === 'true', undefined, {timeout:3000})
+  assert.ok(Math.abs((await marker('a', boxA)).x) > Math.abs(a0.x), 'Touch pinch magnifies the sky pixels')
+  await cdp.send('Emulation.setTouchEmulationEnabled', {enabled:false})
+  await cdp.detach()
+  await page.getByRole('button', {name:'Reset view'}).click()
+  assert.deepEqual(await marker('a', boxA), a0)
   await page.getByRole('button', {name:'Find sources'}).click()
   const residualTitle = 'Single-pair residuals · 2'
   await page.getByText(residualTitle, {exact:true}).click()
@@ -274,6 +334,14 @@ try {
   assert.deepEqual(measurement.covariancePx2, covariance)
   assert.equal(measurement.method, 'snapped native centroid')
   await page.getByText('Spectrum', {exact:true}).click()
+  await page.getByRole('button', {name:'Extract spectrum'}).click()
+  await page.getByText('0 of 1 samples measured', {exact:true}).waitFor()
+  await page.getByText('No brightness measurements', {exact:true}).waitFor()
+  await page.getByRole('button', {name:'Retry with extended extraction'}).click()
+  await page.getByText('2 of 3 samples measured', {exact:true}).waitFor()
+  assert.equal(await page.locator('.spectrum-chart .spectrum-point').count(), 2)
+  assert.equal(await page.locator('.spectrum-chart .spectrum-error-bar').count(), 2)
+  assert.deepEqual(spectrumRequests[1], {...spectrumRequests[0], mode:'extended'})
   await page.getByLabel('Spectrum source').selectOption('coadded_cube')
   await page.getByRole('button', {name:'Extract spectrum'}).click()
   const citation = page.getByRole('link', {name:'Spectral product DOI ↗'})
@@ -360,7 +428,7 @@ try {
   await page.waitForTimeout(150)
   assert.equal(budgetSpectrumRequests, 0, 'A fourth concurrent transfer waits for capacity')
   releaseAdjacent()
-  await page.getByText('Spectrum ready.', {exact:true}).waitFor()
+  await page.getByText('Extraction complete.', {exact:true}).waitFor()
   assert.equal(budgetSpectrumRequests, 1)
   releaseBudget()
   await page.locator('#caption-b').filter({hasText: '2025-02-13 12:00:00 UTC'}).waitFor()
@@ -387,7 +455,7 @@ try {
     assert.equal((await page.evaluate(() => window.rasterUse)).decoded, rasters.decoded)
   }
   await page.locator('#metadata').getByText('fixture-raster-11', {exact:true}).waitFor()
-  console.log('Timeline, comparisons, survey passes, analysis provenance, bounded raster cache, transfer deduplication, and PNG limits passed.')
+  console.log('Timeline, comparisons, synchronized drag and wheel/pinch zoom, survey passes, analysis provenance, bounded raster cache, and PNG limits passed.')
 } finally {
   await browser.close()
 }
