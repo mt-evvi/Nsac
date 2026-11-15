@@ -41,4 +41,6 @@ Publish the generated `web/dist-static` directory at `/Nsac/` for project-root h
 
 This project makes use of data products from the Spectro-Photometer for the History of the Universe, Epoch of Reionization and Ices Explorer (SPHEREx), which is a joint project of the Jet Propulsion Laboratory and the California Institute of Technology, and is funded by the National Aeronautics and Space Administration. [IRSA mission archive](https://irsa.ipac.caltech.edu/Missions/spherex.html) · [DR1 spectral images](https://doi.org/10.26131/IRSA678) · [DR1 all-sky cube](https://doi.org/10.26131/IRSA679) · [QR3 spectral images](https://doi.org/10.26131/IRSA662)
 
+The original project software and documentation are available under the [MIT License](LICENSE). Data products and dependencies retain their source attribution and applicable terms. [Data and third-party notices](docs/DEPENDENCIES.md)
+
 Codex assisted with planning, implementation, testing and documentation. Observation images come from the archive. Derived masks, aligned rasters and comparison products are reproducible from the source identifiers recorded in the viewer and example manifests.

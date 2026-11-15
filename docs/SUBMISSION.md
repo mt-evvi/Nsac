@@ -2,7 +2,7 @@
 
 - Live project for **Link to Final Project**: [SPHEREx Sky Viewer](https://spherex.144.91.89.214.sslip.io/).
 - Separate **Link to Project Demo**: [23-second English demo](https://spherex.144.91.89.214.sslip.io/assets/spherex-demo.webm).
-- Source URL for the project description: [mt-evvi/Nsac](https://github.com/mt-evvi/Nsac). The owner chooses the code license and approves public source visibility after reviewing the draft PR.
+- Source URL for the project description: [mt-evvi/Nsac](https://github.com/mt-evvi/Nsac). The original project software uses the [MIT License](../LICENSE). Enable public source visibility and check the repository while signed out before submission.
 - In **Use of Super Intelligence**, state that Codex helped plan, implement, test, document, and capture the demo. The real cutouts are NASA/IPAC IRSA archive data and the fixtures retain product IDs, timestamps, and citations.
 
 Suggested description for the team to review:

@@ -44,7 +44,7 @@ jobs:
         run: |
           printf 'SPHEREX_RELEASE=%s\n' "$GITHUB_SHA" > release.env
           sha256sum requirements.lock web/package-lock.json > dependency-hashes.sha256
-          tar --exclude='__pycache__' -czf "spherex-$GITHUB_SHA.tar.gz" server presets web/dist requirements.lock release.env dependency-hashes.sha256 deploy
+          tar --exclude='__pycache__' -czf "spherex-$GITHUB_SHA.tar.gz" server presets web/dist requirements.lock release.env dependency-hashes.sha256 deploy LICENSE docs/DEPENDENCIES.md
       - uses: actions/upload-artifact@v4
         with:
           name: spherex-${{ github.sha }}
