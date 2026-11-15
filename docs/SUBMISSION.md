@@ -74,8 +74,10 @@ SPHEREx is a joint project of the Jet Propulsion Laboratory and Caltech, funded 
 | Field | Value |
 | --- | --- |
 | Link to Final Project | https://spherex.144.91.89.214.sslip.io/ |
-| Link to Project Demo | https://spherex.144.91.89.214.sslip.io/assets/spherex-demo.webm |
+| Link to Project Demo | https://spherex.144.91.89.214.sslip.io/assets/spherex-demo-2026.mp4 |
 | Team | https://www.spaceappschallenge.org/2026/find-a-team/ze-deutsche/?tab=members |
+
+The 28.33-second demo opens with Ze Deutsche, presents the Planet X and SPHEREx challenge, and shows real Barnard’s Star observations in the current viewer. It has English captions and plays without an account. [WebM copy](https://spherex.144.91.89.214.sslip.io/assets/spherex-demo.webm)
 
 **Use of Super Intelligence**
 

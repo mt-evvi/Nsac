@@ -148,3 +148,15 @@ Release `local-099c89b286feb68410c99fef` lists each contributing exposure and it
 The archived metadata screen across the six example centers found 2,264 distinct same-series, same-visit, same-detector pairs within one hour. Of these, 2,248 had both passband estimates. The smallest estimated center gap was 0.861 times the narrower bandwidth, above the 0.5 limit. One bounded DR1 deep survey search at RA 276.26°, Dec +64.82° covering 2025-04-28 12:50–14:10 UTC timed out after 8.384 seconds. It made no cutout requests. The contributor UI and weighted-mean calculation passed controlled checks, while a real positive coadd remains unverified. [IRSA archive search reference](https://irsa.ipac.caltech.edu/spherex-archive-documentation/spherex-data-access/)
 
 Repository access recovered through the GitHub connector. Draft [PR #2](https://github.com/mt-evvi/Nsac/pull/2) contains the verified changes after the first release. Its initial head `190e37f3ac70df34687763925cff00954da39f10` passed [Verify SPHEREx](https://github.com/mt-evvi/Nsac/actions/runs/43760967005).
+
+## Updated judging video
+
+Release `local-5e29382ce7da0e763ba8038e` replaced the original demo and added an MP4 copy. The updated video introduces Ze Deutsche and the Planet X and SPHEREx challenge. It shows the August 15, 2025 and March 22, 2026 Barnard’s Star observations, their signed difference, and the catalog controls. The English captions credit NASA and ESA and explain the saturation limit. The last frame gives the public viewer address.
+
+Chromium played both signed-out HTTPS links to the end at 1280 × 720. The measured durations were 28.3252 seconds for MP4 and 28.20 seconds for WebM. The MP4 returned HTTP 206 for a byte-range request. The [capture script](../web/scripts/record-pitch.mjs) uses the two bundled images and one locally computed comparison. [Submission MP4](https://spherex.144.91.89.214.sslip.io/assets/spherex-demo-2026.mp4) · [WebM copy](https://spherex.144.91.89.214.sslip.io/assets/spherex-demo.webm)
+
+## Exact-field cache fallback
+
+A direct DR1 SIA request at the known Barnard coordinates with `MAXREC=1` timed out after 7.33 seconds. Release `local-2e8d7589757ba7ae5f2dddc5` makes the distinction between unavailable archive discovery and unknown coverage explicit. During an archive failure, a typed search can use a bundled result only when the center and field width match and all bundled frames satisfy the requested filters. It displays the partial result with a cache notice. Unrelated searches and incompatible filters keep the prior image and report the failure.
+
+The Reading the image guide distinguishes hatched pixels rejected from measurements, solid dark measured pixels, and sky beyond a loaded cutout. The 90 backend tests, three frontend tests, all three local Chromium suites and the staged smoke passed. The browser fixture checked one attempted archive request, real bundled playback, offline share reload and retention of the previous view with an incompatible detector filter.

@@ -77,7 +77,10 @@ h2 { font-size: clamp(1.6rem, 4vw, 2.3rem); }
 .mask-guide summary { display: flex; align-items: center; gap: 7px; width: fit-content; list-style: none; }
 .mask-guide summary::after { content: '▸'; color: var(--cyan); }
 .mask-guide[open] summary::after { content: '▾'; }
-.mask-guide p { max-width: 54ch; margin: 6px 0 0; }
+.mask-guide dl { display: grid; gap: 5px; max-width: 62ch; margin: 8px 0 0; }
+.mask-guide dt { color: #dceaf5; font-weight: 600; }
+.mask-guide dd { margin: 0; }
+.mask-guide p { max-width: 62ch; margin: 7px 0 0; }
 .mask-swatch { width: 21px; height: 16px; border: 1px solid #46566c; border-radius: 3px; background: repeating-linear-gradient(45deg,#141c29 0 4px,#263244 4px 6px); }
 .timeline { padding: 14px; }
 .timeline-top, .date-range { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 5px; }

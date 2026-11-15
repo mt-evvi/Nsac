@@ -155,7 +155,7 @@ def circuit_for(purpose):
 def _check_circuit(now, purpose):
     circuit = circuit_for(purpose)
     if circuit.until > now or circuit.half_open:
-        message = ("Archive search is temporarily unavailable. Cached examples and known exposures can still be viewed."
+        message = ("Archive search is paused after failed IRSA requests. Open a cached example, or try again later."
                    if purpose == "metadata" else
                    "Archive image data is temporarily unavailable. Already cached images remain available.")
         raise UpstreamError("CIRCUIT_OPEN", message, 503, True, max(1, int(circuit.until - now + 1)))

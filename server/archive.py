@@ -314,7 +314,7 @@ def discover(query, *, budget=None, deadline=None):
         results = [future.result() for future in futures]
     warnings = [warning for result in results for warning in result["warnings"]]
     if not any(result["successful"] for result in results):
-        raise ArchiveError("UPSTREAM_UNAVAILABLE", "IRSA could not index this field. Try again or open a bundled example.", 503, True, 10)
+        raise ArchiveError("UPSTREAM_UNAVAILABLE", "IRSA’s observation search did not return a usable result. Coverage here is unknown. Open a cached example or try again later.", 503, True, 10)
     entries = [entry for result in results for entry in result.pop("entries")
                if start.isoformat() <= entry["slotKey"] <= end.isoformat()]
     complete = all(result["complete"] for result in results)

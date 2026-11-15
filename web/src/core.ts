@@ -12,7 +12,7 @@ export type Frame = {
   contributors?: {productId: string; archiveUrl: string; startUtc: string; endUtc: string}[]
 }
 export type Query = { raDeg: number; decDeg: number; fovArcmin: number; start?: string; end?: string; wavelengthUm?: number; detector?: number }
-export type Manifest = { seriesId: string; pipelineVersion?: string; query: Query; grid: {width: number; height: number; crpix: number[]; crval: number[]; cd: number[][]}; frames: Frame[]; count?: number; nextCursor?: string; counts: Record<string, number>; searchStatus: string }
+export type Manifest = { seriesId: string; pipelineVersion?: string; query: Query; grid: {width: number; height: number; crpix: number[]; crval: number[]; cd: number[][]}; frames: Frame[]; count?: number; nextCursor?: string; counts: Record<string, number>; searchStatus: string; complete?: boolean }
 export type Envelope<T> = { status: 'succeeded' | 'partial'; data: T; warnings: string[] }
 type Job<T> = Envelope<T> | { status: 'running' | 'queued'; jobId: string; stage: string; pollAfterMs: number } | { status: 'failed'; error: { code: string; message: string } }
 const el = <T extends HTMLElement>(id: string) => document.getElementById(id) as T
@@ -485,11 +485,10 @@ async function browseField(center: {raDeg: number; decDeg: number}, options: Bro
   try {
     let response: Envelope<Manifest>
     if (replacement) {
-      response = await data<Manifest>('/api/v1/series', signal, replacement, false)
+      response = await searchField(replacement, signal, false)
     } else if (freshDiscovery) {
       const {fovArcmin, start, end, detector, wavelengthUm} = current.query
-      response = await data<Manifest>('/api/v1/series', signal,
-        {...center, fovArcmin, start, end, detector, wavelengthUm}, false)
+      response = await searchField({...center, fovArcmin, start, end, detector, wavelengthUm}, signal, false)
     } else if (returning && originalIndex) response = originalIndex
     else if (returning && originalSeries) response = await data<Manifest>(`/api/v1/series/${originalSeries}`, signal, undefined, false)
     else if (fromPreset) response = await data<Manifest>(presetPath(fromPreset), signal, undefined, false)
@@ -579,7 +578,7 @@ async function browseField(center: {raDeg: number; decDeg: number}, options: Bro
       }
     }
     manifest = next
-    preset = fromPreset
+    preset = fromPreset ?? bundledSlug(next.seriesId)
     shown = firstReady
     paired = secondReady
     rendered = firstImage
@@ -603,14 +602,14 @@ async function browseField(center: {raDeg: number; decDeg: number}, options: Bro
     lastWarnings = warnings
     if (replacement) {
       originalQuery = next.query
-      originalPreset = undefined
+      originalPreset = preset
       originalIndex = response
       originalSeries = next.seriesId
-      el('field-title').textContent = 'Custom sky field'
+      el('field-title').textContent = preset ? known.get(preset)!.name : 'Custom sky field'
       const {raDeg, decDeg, fovArcmin} = next.query
       el('field-position').textContent = `${raDeg.toFixed(5)}°, ${decDeg >= 0 ? '+' : ''}${decDeg.toFixed(5)}° · ${fovArcmin}′`
-      for (const link of el('presets').querySelectorAll('a')) link.setAttribute('aria-current', 'false')
-      history.pushState(null, '', urlFor(next.query))
+      for (const link of el('presets').querySelectorAll('a')) link.setAttribute('aria-current', String(link.dataset.slug === preset))
+      history.pushState(null, '', urlFor(next.query, preset))
     }
     setMode(secondReady ? (['side', 'blink'].includes(selectedMode) ? selectedMode : 'side') : 'single')
     details(firstReady)
@@ -742,6 +741,39 @@ let manifestPages: AbortController | undefined
 let retrySlot: number | undefined
 const validModes = staticOnly ? ['single', 'blink', 'side'] : ['single', 'blink', 'side', 'difference', 'absolute_change', 'residual_score', 'sum']
 const presetPath = (slug: string) => `${appBase}presets/${slug}/manifest.json`
+
+function bundledSlug(seriesId: string) {
+  if (!seriesId.startsWith('preset-')) return
+  const slug = seriesId.slice('preset-'.length)
+  return known.has(slug) ? slug : undefined
+}
+
+async function searchField(query: Query, signal: AbortSignal, announce = true) {
+  try {
+    return await data<Manifest>('/api/v1/series', signal, query, announce)
+  } catch (error) {
+    if (signal.aborted || !(error instanceof ServiceError) ||
+      !['UPSTREAM_UNAVAILABLE', 'CIRCUIT_OPEN', 'ARCHIVE_TIMEOUT'].includes(error.code)) throw error
+    const example = [...known].find(([, field]) => field.fovArcmin === query.fovArcmin &&
+      Math.abs(field.raDeg - query.raDeg) < 1e-7 && Math.abs(field.decDeg - query.decDeg) < 1e-7)
+    if (!example) throw error
+    const [slug, field] = example
+    const saved = await data<Manifest>(presetPath(slug), signal, undefined, false).catch(() => undefined)
+    signal.throwIfAborted()
+    if (!saved || saved.data.seriesId !== `preset-${slug}` || !saved.data.frames.length) throw error
+    const preservesFilters = saved.data.frames.every(frame => frame.imageUrl &&
+      (!query.start || frame.slotKey >= query.start) && (!query.end || frame.slotKey <= query.end) &&
+      (!query.detector || frame.detector === query.detector) &&
+      (query.wavelengthUm === undefined || (frame.wavelengthUm != null && frame.bandwidthUm != null &&
+        Math.abs(frame.wavelengthUm - query.wavelengthUm) <= frame.bandwidthUm / 2)))
+    if (!preservesFilters) throw error
+    return {
+      status: 'partial' as const,
+      data: {...saved.data, query: {...saved.data.query, ...query}, complete: false, searchStatus: 'PARTIAL'},
+      warnings: [`IRSA search is unavailable. Showing the bundled ${field.name} observations for this field. Other dates may exist.`, ...saved.warnings],
+    }
+  }
+}
 const statusMessage = (error: unknown) => error instanceof Error ? error.message : 'The operation could not be completed.'
 
 function updatePrepared(frame: Frame) {
@@ -980,7 +1012,7 @@ async function savedIndex(query: Query, example: string | undefined, signal: Abo
       warning = `The saved nearby view is unavailable. ${statusMessage(error)}`
     }
   }
-  const original = await data<Manifest>(example ? presetPath(example) : '/api/v1/series', signal, example ? undefined : query)
+  const original = example ? await data<Manifest>(presetPath(example), signal) : await searchField(query, signal)
   originalIndex = original
   originalSeries = original.data.seriesId
   if (!center) return original
@@ -1031,6 +1063,14 @@ async function loadIndex(query: Query, example: string | undefined, fromLink = f
     if (signal.aborted || active !== queryId) return
     manifest = response.data
     originalQuery = {...manifest.query, raDeg: query.raDeg, decDeg: query.decDeg, fovArcmin: query.fovArcmin}
+    if (!example && !initialCenter) {
+      const matched = bundledSlug(manifest.seriesId)
+      if (matched) {
+        preset = originalPreset = matched
+        el('field-title').textContent = known.get(matched)!.name
+        for (const link of el('presets').querySelectorAll('a')) link.setAttribute('aria-current', String(link.dataset.slug === matched))
+      }
+    }
     if (initialCenter && !manifest.seriesId.startsWith('preset-')) preset = undefined
     lastWarnings = response.warnings
     if (!manifest.frames.length) {
