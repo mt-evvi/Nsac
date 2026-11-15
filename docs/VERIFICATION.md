@@ -104,3 +104,39 @@ Release `local-5c253c155ecb66ad38dcb1e6` passed 70 Python tests, three frontend 
 Release `local-1e29b8524e5b75d9f846258c` explains the image mask and adds pointer-centered wheel zoom, drag panning, touch pinch and keyboard navigation. Chromium verified synchronized movement across both comparison panes, exact mark and share coordinates, and mask and catalog explanations. The Epsilon Indi B exposure on 2026-04-20 has 91.4% usable pixels. Hatched pixels show data rejected by the mask or missing from the exposure.
 
 The spectrum shows measured and unavailable channels, a brightness plot with uncertainty bars where available, and a readable sample list on mobile. The deterministic browser test verified that the extended retry preserves the selected position and photometry method. On the staged release the real Barnard DR1 cube plotted 68 measurements and marked the remaining 34 channels unavailable. Both desktop and phone-sized layouts passed.
+
+## Bounded neighboring-sky navigation
+
+Release `local-f392d03de36d194382d2387f` adds neighboring cutouts after a settled drag while retaining the entered target. Nearby movement reuses cached exposure identities and does not repeat metadata discovery. An explicit **Search archive here** control can discover other exposures at the visible center. Failed or superseded work retains the last loaded field. Both comparison images swap together, old decoded images are released, and restored shared views preserve the target and viewed center separately.
+
+All 81 Python tests, three frontend tests, type checking, and all three Chromium suites passed. The final public HTTPS build passed the navigation fixture and signed-out playback, comparison, shared-link, keyboard and mobile checks. The regenerated static `/Nsac/` copy restored a shared observation on mobile with no API requests. The previous app release remains in the inactive slot, and the shared Caddy process retained PID 1817234.
+
+A real neighboring Barnard cutout loaded in 9.106 seconds cold and 1.423 seconds warm. Three random 1′ metadata-only lookups revealed an IRSA metadata outage: one retryable upstream failure followed by two circuit rejections with no further archive work. Both official SIA collection probes returned HTTP 502. No frame or image download was requested by the random probes. These results do not establish absent coverage. [Navigation, resource limits and exact live test positions](SKY_NAVIGATION.md)
+
+Original planning and specification checksums, including the original README snapshot, remain unchanged. The current source and fallback build were saved locally because the newly installed GitHub connector still returned an unavailable-tool error and the server CLI required renewed repository authorization. No GitHub CI result is claimed for this follow-up.
+
+## Archive search outage and team footer
+
+On November 15, official DR1 and QR3 SIA requests with `MAXREC=1` timed out even without date filters. The documented TAP query returned HTTP 502. A single-prefix AWS query returned HTTP 200 and listed a DR1 Level 2 planning period. These probes read 816 bytes in total and no images. The failure was observed in archive discovery, while the archived dataset remained accessible. [IRSA search and access documentation](https://irsa.ipac.caltech.edu/spherex-archive-documentation/spherex-data-access/)
+
+Release `local-6487093cf90f20e562b2b90c` isolates the discovery circuit from image data. Both still share the two-connection limit and daily transfer allowance. On staging, a fresh search returned `UPSTREAM_UNAVAILABLE` after 12.08 seconds. A new cutout of a known Barnard exposure then prepared in 4.05 seconds, with 100% geometric coverage and 91.7% usable pixels. Readiness reported discovery degraded and cutouts reachable.
+
+All 87 Python tests, three frontend tests and three staged Chromium suites passed. The public signed-out browser verified the bundled examples, comparison, sharing, keyboard controls, phone layout, the Ze Deutsche footer link and demo delivery. Caddy remained on PID 1817234. Fresh searches remain dependent on IRSA. [Submission copy](SUBMISSION.md)
+
+## Explicit search and archive recovery
+
+Release `local-984379a643bea8651ef4a9ef` opens the earliest suitable indexed observation when an explicit archive search cannot restore the selected UTC date and detector. It explains when it can only open a single exposure. Return to target can select an available date from the saved target index. Automatic panning still preserves the selected observations. The Chromium fixture starts with a comparison, returns disjoint dates in an explicit search, checks the earliest new date and released comparison, and returns to the original image without a new search.
+
+IRSA discovery validates the VOTable before recording a successful transfer. Tests cover malformed HTTP 200 responses, VOTable errors, a valid partial response with overflow, and independent cutout access during discovery cooldown. All 88 Python tests, three frontend tests and three staged Chromium suites passed. All six example bundles passed the provenance and image checks.
+
+The public navigation regression and signed-out smoke checks passed after activation. Caddy retained PID 1817234. Both the GitHub CLI and connector returned 404 for the private project repository, and the connector was signed in under a different account from the CLI. The current release source was preserved locally.
+
+## Failed coordinate searches and the shared row budget
+
+Release `local-1148e474748d3ea904b5b755` keeps the last usable view when a new coordinate search fails, finds no observations, or cannot prepare a frame. The form keeps the attempted input and the share link continues to identify the visible comparison. The browser test also verifies that a successful replacement starts a new field and clears the old comparison.
+
+Each discovery job now reserves a shared budget of 4,000 SIA rows across DR1 and QR3 before requesting pages. An oversized reply is sliced before indexing and the manifest is marked incomplete. The two-collection fixtures verified the 4,000-row limit, the per-response 500-row request limit, the 12-attempt ceiling and preservation of usable partial results. All 90 Python tests, three frontend tests and three staged Chromium suites passed.
+
+A recovery probe for a previously covered non-preset position used one DR1 SIA request with `MAXREC=1` and timed out after 7.34 seconds. Both GitHub access paths still returned 404 for the project repository. Offline verification recovered one eligible centroid for Epsilon Indi B, while the available metadata yielded no compatible four-visit holdout sequence including it. [Science validation](SCIENCE_VALIDATION.md)
+
+The signed-out production browser passed the navigation and example checks. The rebuilt static fallback played an observation and restored its shared link on a phone viewport with zero API requests. Caddy retained PID 1817234.

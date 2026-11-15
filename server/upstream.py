@@ -5,6 +5,7 @@ import sqlite3
 import threading
 import time
 from contextlib import closing
+from dataclasses import dataclass, field
 from urllib.parse import parse_qs, urljoin, urlsplit
 
 import requests
@@ -27,10 +28,19 @@ PATHS = {
     "release-index": {IRSA_CLOUD: re.compile(r"/")},
 }
 SEMAPHORES = {"irsa": threading.BoundedSemaphore(2), "catalog": threading.BoundedSemaphore(1)}
-FAILURES = []
 HEALTH_LOCK = threading.Lock()
-CIRCUIT_UNTIL = 0.0
-HALF_OPEN = False
+
+
+@dataclass
+class Circuit:
+    failures: list[float] = field(default_factory=list)
+    until: float = 0.0
+    half_open: bool = False
+
+
+# Search can fail while known cutouts and cloud products remain available.
+# Both capabilities still share the same connection and transfer allowances.
+CIRCUITS = {"discovery": Circuit(), "images": Circuit()}
 LAST_PROBE = None
 LAST_DISCOVERY_PROBE = None
 
@@ -138,58 +148,68 @@ def seconds_left(deadline):
     return remaining
 
 
-def _check_circuit(now):
-    if CIRCUIT_UNTIL > now or HALF_OPEN:
-        raise UpstreamError("CIRCUIT_OPEN", "The archive is temporarily unavailable. Cached examples are still available.",
-                            503, True, max(1, int(CIRCUIT_UNTIL - now + 1)))
+def circuit_for(purpose):
+    return CIRCUITS["discovery" if purpose == "metadata" else "images"]
+
+
+def _check_circuit(now, purpose):
+    circuit = circuit_for(purpose)
+    if circuit.until > now or circuit.half_open:
+        message = ("Archive search is temporarily unavailable. Cached examples and known exposures can still be viewed."
+                   if purpose == "metadata" else
+                   "Archive image data is temporarily unavailable. Already cached images remain available.")
+        raise UpstreamError("CIRCUIT_OPEN", message, 503, True, max(1, int(circuit.until - now + 1)))
 
 
 def check_admission(kind):
     """Reject new transfer-dependent work without reserving the recovery probe."""
-    if kind == "irsa":
+    category = "irsa" if kind == "metadata" else kind
+    if category == "irsa":
         with HEALTH_LOCK:
-            _check_circuit(time.monotonic())
+            _check_circuit(time.monotonic(), "metadata" if kind == "metadata" else "cutout")
     try:
-        used = TRANSFERS.recent_bytes()[kind]
+        used = TRANSFERS.recent_bytes()[category]
     except (OSError, sqlite3.Error) as exc:
         raise UpstreamError("TRANSFER_ACCOUNTING_UNAVAILABLE", "Transfer accounting is temporarily unavailable.", 503, True, 5) from exc
-    if used >= TRANSFERS.ceiling[kind]:
+    if used >= TRANSFERS.ceiling[category]:
         raise daily_budget_error()
 
 
-def allow_probe():
-    global HALF_OPEN
+def allow_probe(purpose):
     with HEALTH_LOCK:
-        _check_circuit(time.monotonic())
-        probe = bool(CIRCUIT_UNTIL)
-        HALF_OPEN = probe
+        _check_circuit(time.monotonic(), purpose)
+        circuit = circuit_for(purpose)
+        probe = bool(circuit.until)
+        circuit.half_open = probe
         return probe
 
 
 def record_probe(probe, failure, purpose):
-    global CIRCUIT_UNTIL, HALF_OPEN, LAST_PROBE, LAST_DISCOVERY_PROBE
+    global LAST_PROBE, LAST_DISCOVERY_PROBE
     with HEALTH_LOCK:
+        circuit = circuit_for(purpose)
         now = time.monotonic()
         if failure is None:
-            HALF_OPEN = False
+            if probe:
+                circuit.half_open = False
             return
         LAST_PROBE = {"checkedAtUnix": int(time.time()), "status": "degraded" if failure else "reachable", "purpose": purpose}
         if purpose == "metadata":
             LAST_DISCOVERY_PROBE = LAST_PROBE
         if failure:
-            FAILURES[:] = [t for t in FAILURES if now - t < 60]
-            FAILURES.append(now)
-            if probe or len(FAILURES) >= 3:
-                CIRCUIT_UNTIL = now + 60
+            circuit.failures[:] = [t for t in circuit.failures if now - t < 60]
+            circuit.failures.append(now)
+            if probe or len(circuit.failures) >= 3:
+                circuit.until = now + 60
         elif probe:
-            CIRCUIT_UNTIL = 0.0
-            FAILURES.clear()
+            circuit.until = 0.0
+            circuit.failures.clear()
         if probe:
-            HALF_OPEN = False
+            circuit.half_open = False
 
 
-def fetch(url, *, limit, deadline, purpose, budget=None, byte_range=None, session=None):
-    """Stream one bounded response. The caller may retry once within its job budget."""
+def fetch(url, *, limit, deadline, purpose, budget=None, byte_range=None, session=None, decode=None):
+    """Stream one bounded response, optionally decoding it before recording probe success."""
     if purpose == "catalog":
         limit = min(limit, MIB)
     elif purpose != "calibration":
@@ -203,14 +223,14 @@ def fetch(url, *, limit, deadline, purpose, budget=None, byte_range=None, sessio
     if not semaphore.acquire(timeout=seconds_left(deadline)):
         raise UpstreamError("ARCHIVE_TIMEOUT", "The upstream request exceeded its deadline.", 503, True)
     try:
-        return _fetch(url, limit, deadline, purpose, category, budget, byte_range, session)
+        return _fetch(url, limit, deadline, purpose, category, budget, byte_range, session, decode)
     finally:
         semaphore.release()
 
 
-def _fetch(url, limit, deadline, purpose, category, budget, byte_range, session):
+def _fetch(url, limit, deadline, purpose, category, budget, byte_range, session, decode):
     tracks_archive_health = category == "irsa" and purpose != "release-index"
-    probe = allow_probe() if tracks_archive_health else False
+    probe = allow_probe(purpose) if tracks_archive_health else False
     failure = False
     completed = False
     try:
@@ -264,15 +284,22 @@ def _fetch(url, limit, deadline, purpose, category, budget, byte_range, session)
                     data.extend(chunk)
                 if byte_range is not None and len(data) != last - first + 1:
                     raise UpstreamError("UPSTREAM_UNAVAILABLE", "The requested archive byte range was incomplete.", 502, True)
-                completed = True
-                return bytes(data)
+            payload = bytes(data)
+            if decode is not None:
+                seconds_left(deadline)
+                result = decode(payload)
+                seconds_left(deadline)
+            else:
+                result = payload
+            completed = True
+            return result
         raise UpstreamError("UNSAFE_PRODUCT", "The upstream service returned too many redirects.")
     except requests.exceptions.RequestException as exc:
         failure = True
         timeout = isinstance(exc, requests.exceptions.Timeout) or "timed out" in str(exc).lower()
         code = "ARCHIVE_TIMEOUT" if timeout else "UPSTREAM_UNAVAILABLE"
         raise UpstreamError(code, "The upstream connection was interrupted. Try again shortly.", 503, True) from exc
-    except UpstreamError as exc:
+    except Problem as exc:
         failure = exc.code in {"UPSTREAM_UNAVAILABLE", "ARCHIVE_TIMEOUT"} and exc.retryable
         raise
     finally:

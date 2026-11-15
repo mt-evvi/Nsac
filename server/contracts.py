@@ -89,6 +89,10 @@ class SkyPosition(Input):
     decDeg: Dec
 
 
+class RecenterQuery(SkyPosition):
+    """A nearby center using the existing series' bounds and known exposures."""
+
+
 class PixelPosition(Input):
     x: Annotated[float, Field(ge=0, lt=128, strict=True)]
     y: Annotated[float, Field(ge=0, lt=128, strict=True)]

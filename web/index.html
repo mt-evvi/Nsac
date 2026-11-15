@@ -50,7 +50,9 @@
             </div>
             <div id="heatmap-legend" class="heatmap-legend" hidden></div>
             <div class="viewer-guide">
-              <p id="image-instructions"><strong>Move around the image</strong><span>Scroll or pinch to zoom, then drag to pan. Choose a wider field to see more sky.</span></p>
+              <p id="image-instructions"><strong>Explore the sky</strong><span>Drag to move; scroll or pinch to zoom. Nearby observations load after you stop moving, when the archive is available.</span></p>
+              <div class="view-location"><output id="view-center" aria-live="off"></output><button id="return-target" type="button" class="quiet" hidden>Return to entered position</button><button id="search-view" type="button" class="quiet" aria-describedby="browse-help" title="Look for other exposures at the view center. This contacts IRSA and can be unavailable." hidden>Search archive here</button></div>
+              <p id="browse-help" class="browse-note">Your entered coordinates stay above. Nearby views reuse the loaded exposure list and request only a small cutout. Blank space has not loaded yet; archive outages or the exposure’s edge can prevent a new view. Use Search archive here to look for other exposures when the archive is available.</p>
               <div class="image-key">
                 <span class="intensity-guide"><span aria-hidden="true" class="intensity-ramp"></span> Fainter to brighter</span>
                 <details class="mask-guide"><summary><span class="mask-swatch" aria-hidden="true"></span> Masked or missing pixels</summary><p>Hatched pixels fall outside the exposure or failed the quality checks, for example around saturated stars. These pixels are omitted from measurements. Dark solid pixels show measured low brightness.</p></details>
@@ -82,7 +84,13 @@
         </div>
       </section>
     </main>
-    <footer><span>SPHEREx data from NASA/IPAC IRSA</span><a href="https://irsa.ipac.caltech.edu/spherex-archive-documentation/">Archive documentation ↗</a></footer>
+    <footer>
+      <div class="team-credit">
+        <div><p class="eyebrow">NASA Space Apps Challenge 2026</p><h2>Built by Ze Deutsche</h2><p>Exploring the changing infrared sky, one observation at a time.</p></div>
+        <a class="team-link" href="https://www.spaceappschallenge.org/2026/find-a-team/ze-deutsche/?tab=members">Meet our team ↗</a>
+      </div>
+      <div class="footer-data"><span>SPHEREx data from NASA/IPAC IRSA</span><a href="https://irsa.ipac.caltech.edu/spherex-archive-documentation/">Archive documentation ↗</a></div>
+    </footer>
     <script type="module" src="/src/core.ts"></script>
   </body>
 </html>
