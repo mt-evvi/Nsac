@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#0d141e">
+    <meta name="description" content="Browse real NASA SPHEREx images of the same sky field over time.">
+    <title>SPHEREx Sky Viewer</title>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="SPHEREx Sky Viewer home"><span class="brand-symbol" aria-hidden="true">✧</span><span>SPHEREx <small>Sky Viewer</small></span></a>
+      <button id="share" class="quiet" type="button" hidden>Copy share link</button>
+    </header>
+    <main>
+      <section class="query" aria-labelledby="title">
+        <div class="query-intro">
+          <p class="eyebrow">NASA SPHEREx observations</p>
+          <h1 id="title">Explore the sky over time</h1>
+          <p>Enter a sky position or open an example to compare infrared observations.</p>
+        </div>
+        <form id="query-form" novalidate>
+          <div class="coordinates">
+            <label>Right ascension <input id="ra" name="ra" placeholder="269.45 or 17h57m48s" autocomplete="off" required></label>
+            <label>Declination <input id="dec" name="dec" placeholder="+4.768 or +04d46m05s" autocomplete="off" required></label>
+            <label>Field width <select id="fov" name="fov"><option value="1">1′</option><option value="2">2′</option><option value="3" selected>3′</option><option value="4">4′</option><option value="5">5′</option><option value="6">6′</option><option value="7">7′</option><option value="8">8′</option></select></label>
+            <button type="submit" class="primary">Find observations</button>
+          </div>
+          <details class="filters"><summary>Date and wavelength filters</summary><div class="filter-fields">
+            <label>From (UTC) <input id="start" type="date" name="start"></label>
+            <label>Through (UTC) <input id="end" type="date" name="end"></label>
+            <label>Wavelength (µm) <input id="wavelength" type="number" name="wavelength" min="0.7" max="5.1" step="any" placeholder="Any"></label>
+            <label>Detector <select id="detector" name="detector"><option value="">Any</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option></select></label>
+          </div></details>
+          <p id="query-error" role="alert" hidden></p>
+        </form>
+        <nav id="presets" class="presets" aria-label="Example fields"><span>Example fields</span></nav>
+      </section>
+      <section class="workspace" aria-labelledby="field-title">
+        <div class="workspace-heading"><div><p class="eyebrow">Observation viewer</p><h2 id="field-title">Sky field</h2></div><span id="field-position" class="field-position"></span></div>
+        <p id="status" class="status" role="status">Choose an example or enter coordinates to load observations.</p>
+        <div class="workbench">
+          <section class="viewer" aria-label="Observation and timeline">
+            <div id="images" class="images">
+              <div id="frame-a" class="frame" tabindex="0" aria-label="Sky image"><canvas id="canvas-a"></canvas><div id="layers-a" class="layers"></div><span id="caption-a" class="caption" hidden></span></div>
+              <div id="frame-b" class="frame" tabindex="0" aria-label="Comparison sky image" hidden><canvas id="canvas-b"></canvas><div id="layers-b" class="layers"></div><span id="caption-b" class="caption" hidden></span></div>
+              <div id="image-empty" class="empty-image"><span aria-hidden="true">✧</span><p>No observation selected</p></div>
+              <div class="orientation" aria-hidden="true">↑ N<br>← E</div>
+              <div id="image-tools" class="image-tools" hidden><button id="zoom-out" type="button" aria-label="Zoom out">−</button><button id="zoom-in" type="button" aria-label="Zoom in">+</button><button id="reset-view" type="button">Reset view</button></div>
+            </div>
+            <div id="heatmap-legend" class="heatmap-legend" hidden></div>
+            <div class="timeline" id="timeline-panel" hidden>
+              <div class="timeline-top"><p class="eyebrow">Observation timeline</p><output id="date-label" for="scrubber"></output></div>
+              <div class="calendar" id="calendar" role="img" aria-label="Observation dates on an elapsed-time scale"></div>
+              <input id="scrubber" type="range" aria-label="Select observation date" min="0" max="0" value="0">
+              <div class="date-range"><span id="date-first"></span><span id="date-last"></span></div>
+              <div class="playback">
+                <button id="previous" type="button" aria-label="Previous observation">‹</button>
+                <button id="play" class="primary" type="button" aria-label="Play observations">▶ Play</button>
+                <button id="next" type="button" aria-label="Next observation">›</button>
+                <label>Speed <select id="speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option></select></label>
+                <label>Interval <select id="interval"><option value="dates">Observation dates</option><option value="week">7 days</option><option value="month">30 days</option><option value="passes">Survey passes</option></select></label>
+                <label id="pointing-label" hidden>Exposure <select id="pointing"></select></label>
+              </div>
+              <p id="timeline-note" class="annotation"></p>
+            </div>
+          </section>
+          <aside class="inspector" id="inspector" aria-label="Field tools">
+            <details open><summary>Frame details</summary><div class="detail-body" id="metadata"><p>Select an observation to view its provenance.</p></div><div class="detail-body contrast" id="contrast-control" hidden><label for="contrast">Contrast</label><input id="contrast" type="range" min="0.5" max="2.5" value="1" step="0.05"><button id="reset-contrast" type="button" class="quiet">Reset</button></div></details>
+            <details id="pair-panel" hidden><summary>Compare dates</summary><div class="detail-body tools" id="pair-controls"></div></details>
+            <details id="track-panel" hidden><summary>Sources and motion</summary><div class="detail-body tools" id="track-controls"></div></details>
+            <details id="catalog-panel" hidden><summary>Catalog overlays</summary><div class="detail-body tools" id="catalog-controls"></div></details>
+            <details id="spectrum-panel" hidden><summary>Spectrum</summary><div class="detail-body tools" id="spectrum-controls"></div></details>
+          </aside>
+        </div>
+      </section>
+    </main>
+    <footer><span>SPHEREx data from NASA/IPAC IRSA</span><a href="https://irsa.ipac.caltech.edu/spherex-archive-documentation/">Archive documentation ↗</a></footer>
+    <script type="module" src="/src/core.ts"></script>
+  </body>
+</html>

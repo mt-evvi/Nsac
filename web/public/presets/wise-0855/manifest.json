@@ -1,0 +1,203 @@
+{
+  "status": "succeeded",
+  "data": {
+    "schemaVersion": 1,
+    "pipelineVersion": "irsa-tan-v1",
+    "query": {
+      "raDeg": 133.75977,
+      "decDeg": -7.24218,
+      "fovArcmin": 5,
+      "start": "2025-04-01",
+      "end": "2026-11-14",
+      "frame": "ICRS"
+    },
+    "grid": {
+      "projection": "TAN",
+      "frame": "ICRS",
+      "width": 49,
+      "height": 49,
+      "crpix": [
+        25.0,
+        25.0
+      ],
+      "crval": [
+        133.75977,
+        -7.24218
+      ],
+      "cd": [
+        [
+          -0.0017006802721088435,
+          0.0
+        ],
+        [
+          0.0,
+          0.0017006802721088435
+        ]
+      ],
+      "pixelConvention": "zero-based centers, y increases north"
+    },
+    "counts": {
+      "products": 258,
+      "pointings": 129,
+      "observationDates": 27,
+      "independentEpochs": 14,
+      "preparedFrames": 2
+    },
+    "searchStatus": "OK",
+    "complete": true,
+    "warnings": [
+      "This example contains a selected, wavelength-matched subset of the archive index.",
+      "Observation-era audit position. The NASA seed lies about 2.1 arcmin east. Field playback does not establish a detection of this faint object."
+    ],
+    "collections": [
+      {
+        "collection": "spherex_dr1",
+        "release": "DR1",
+        "doi": "10.26131/IRSA678",
+        "complete": true,
+        "successful": true,
+        "rows": 258
+      },
+      {
+        "collection": "spherex_qr3",
+        "release": "QR3",
+        "doi": "10.26131/IRSA662",
+        "complete": true,
+        "successful": true,
+        "rows": 0
+      }
+    ],
+    "visitGrouping": "Consecutive pointings less than 24 hours apart",
+    "frames": [
+      {
+        "frameId": "a288715f23842942cf604d566b10ad35",
+        "productId": "level2_2025W46_1A_0076_3D6_spx_l2b-v27-2026-206",
+        "obsId": "2025W46_1A_0076_3",
+        "release": "DR1",
+        "detector": 6,
+        "startUtc": "2025-11-10T07:14:12.445Z",
+        "endUtc": "2025-11-10T07:16:07.563Z",
+        "slotKey": "2025-11-10",
+        "archiveUrl": "https://irsa.ipac.caltech.edu/ibe/data/spherex/dr1/level2/2025W46_1A/l2b-v27-2026-206/6/level2_2025W46_1A_0076_3D6_spx_l2b-v27-2026-206.fits",
+        "archiveDoi": "10.26131/IRSA678",
+        "state": "prepared",
+        "detectorWavelengthRangeUm": [
+          4.4115,
+          5.009600000000001
+        ],
+        "estimatedDetectorXY": [
+          931.4424111260186,
+          1632.1187062546755
+        ],
+        "footprintMarginPx": 406.88,
+        "surveyTarget": "SPS_048096_S12",
+        "visitId": "e54da9da7904255e1382f63d89543b71",
+        "wavelengthUm": 4.513411045074463,
+        "bandwidthUm": 0.03590100631117821,
+        "midUtc": "2025-11-10T07:15:10.004Z",
+        "wavelengthCalibration": "cwave-cband",
+        "units": "MJy/sr",
+        "stretch": [
+          0.41853985488414763,
+          0.8742428240180029
+        ],
+        "coverageFraction": 0.9987505206164098,
+        "validFraction": 0.9129529362765514,
+        "flags": [
+          "transient",
+          "sampling error",
+          "nonfunctional",
+          "cold pixel",
+          "persistence",
+          "outlier",
+          "halo"
+        ],
+        "warnings": [
+          "Some pixels are masked or outside the exposure."
+        ],
+        "processingVersion": "tan-bilinear-v1",
+        "psfFwhmArcsec": 9.041940402463002,
+        "transferBytes": 4008960,
+        "wavelengthCalibrationId": "spectral_wcs_D6_spx_cal-swcs-v5-2026-191.fits",
+        "imageUrl": "/presets/wise-0855/bc5c76690c07b7ba2b7bb9b9.png",
+        "maskUrl": "/presets/wise-0855/bc5c76690c07b7ba2b7bb9b9-mask.png"
+      },
+      {
+        "frameId": "09208f387e31ef6dd598f1646eafb8cf",
+        "productId": "level2_2026W17_1B_0507_1D6_spx_l2b-v27-2026-242",
+        "obsId": "2026W17_1B_0507_1",
+        "release": "DR1",
+        "detector": 6,
+        "startUtc": "2026-04-22T18:10:31.030Z",
+        "endUtc": "2026-04-22T18:12:26.148Z",
+        "slotKey": "2026-04-22",
+        "archiveUrl": "https://irsa.ipac.caltech.edu/ibe/data/spherex/dr1/level2/2026W17_1B/l2b-v27-2026-242/6/level2_2026W17_1B_0507_1D6_spx_l2b-v27-2026-242.fits",
+        "archiveDoi": "10.26131/IRSA678",
+        "state": "prepared",
+        "detectorWavelengthRangeUm": [
+          4.4115,
+          5.009600000000001
+        ],
+        "estimatedDetectorXY": [
+          1787.5297807218533,
+          1649.4131737364212
+        ],
+        "footprintMarginPx": 251.47,
+        "surveyTarget": "SPS_117647_S12",
+        "visitId": "6a592c55c3ebb0197713718dc082f312",
+        "wavelengthUm": 4.518386363983154,
+        "bandwidthUm": 0.03596412390470505,
+        "midUtc": "2026-04-22T18:11:28.589Z",
+        "wavelengthCalibration": "cwave-cband",
+        "units": "MJy/sr",
+        "stretch": [
+          0.41853985488414763,
+          0.8742428240180029
+        ],
+        "coverageFraction": 0.9995835068721366,
+        "validFraction": 0.8754685547688463,
+        "flags": [
+          "transient",
+          "sampling error",
+          "nonfunctional",
+          "cold pixel",
+          "persistence",
+          "outlier",
+          "halo"
+        ],
+        "warnings": [
+          "Some pixels are masked or outside the exposure."
+        ],
+        "processingVersion": "tan-bilinear-v1",
+        "psfFwhmArcsec": 9.041940402463002,
+        "transferBytes": 4008960,
+        "wavelengthCalibrationId": "spectral_wcs_D6_spx_cal-swcs-v5-2026-191.fits",
+        "imageUrl": "/presets/wise-0855/c8fa74cdccaf2ba1ffd782b5.png",
+        "maskUrl": "/presets/wise-0855/c8fa74cdccaf2ba1ffd782b5-mask.png"
+      }
+    ],
+    "seriesId": "preset-wise-0855",
+    "title": "WISE 0855",
+    "baselineDays": 163.45577065972222,
+    "catalogReference": {
+      "id": "WISE J085510.83\u2212071442.5",
+      "source": "https://doi.org/10.3847/0004-6256/152/3/78",
+      "epoch": "J2026.0"
+    },
+    "presetSlug": "wise-0855",
+    "referenceStretch": [
+      0.41853985488414763,
+      0.8742428240180029
+    ],
+    "fixtureSelection": "Independent matched cutouts",
+    "sourceReleases": [
+      "DR1"
+    ],
+    "downloadBytes": 8017920,
+    "generationSeconds": 13.07
+  },
+  "warnings": [
+    "This example contains a selected, wavelength-matched subset of the archive index.",
+    "Observation-era audit position. The NASA seed lies about 2.1 arcmin east. Field playback does not establish a detection of this faint object."
+  ]
+}

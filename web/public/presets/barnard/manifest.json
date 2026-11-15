@@ -1,0 +1,261 @@
+{
+  "status": "succeeded",
+  "data": {
+    "schemaVersion": 1,
+    "pipelineVersion": "irsa-tan-v1",
+    "query": {
+      "raDeg": 269.45,
+      "decDeg": 4.768,
+      "fovArcmin": 3,
+      "start": "2025-04-01",
+      "end": "2026-11-14",
+      "frame": "ICRS"
+    },
+    "grid": {
+      "projection": "TAN",
+      "frame": "ICRS",
+      "width": 29,
+      "height": 29,
+      "crpix": [
+        15.0,
+        15.0
+      ],
+      "crval": [
+        269.45,
+        4.768
+      ],
+      "cd": [
+        [
+          -0.0017241379310344827,
+          0.0
+        ],
+        [
+          0.0,
+          0.0017241379310344827
+        ]
+      ],
+      "pixelConvention": "zero-based centers, y increases north"
+    },
+    "counts": {
+      "products": 362,
+      "pointings": 184,
+      "observationDates": 39,
+      "independentEpochs": 24,
+      "preparedFrames": 3
+    },
+    "searchStatus": "OK",
+    "complete": true,
+    "warnings": [
+      "This example contains a selected, wavelength-matched subset of the archive index.",
+      "Observation-era field from the archive audit. The bright core may saturate. Motion requires a verified relative registration and target centroid."
+    ],
+    "collections": [
+      {
+        "collection": "spherex_dr1",
+        "release": "DR1",
+        "doi": "10.26131/IRSA678",
+        "complete": true,
+        "successful": true,
+        "rows": 239
+      },
+      {
+        "collection": "spherex_qr3",
+        "release": "QR3",
+        "doi": "10.26131/IRSA662",
+        "complete": true,
+        "successful": true,
+        "rows": 123
+      }
+    ],
+    "visitGrouping": "Consecutive pointings less than 24 hours apart",
+    "frames": [
+      {
+        "frameId": "df65bdbcb960e0bd9005249806a77120",
+        "productId": "level2_2025W33_2C_0321_1D6_spx_l2b-v27-2026-228",
+        "obsId": "2025W33_2C_0321_1",
+        "release": "DR1",
+        "detector": 6,
+        "startUtc": "2025-08-15T20:45:11.337Z",
+        "endUtc": "2025-08-15T20:47:06.455Z",
+        "slotKey": "2025-08-15",
+        "archiveUrl": "https://irsa.ipac.caltech.edu/ibe/data/spherex/dr1/level2/2025W33_2C/l2b-v27-2026-228/6/level2_2025W33_2C_0321_1D6_spx_l2b-v27-2026-228.fits",
+        "archiveDoi": "10.26131/IRSA678",
+        "state": "prepared",
+        "detectorWavelengthRangeUm": [
+          4.4115,
+          5.009600000000001
+        ],
+        "estimatedDetectorXY": [
+          1629.100852320132,
+          261.566418397471
+        ],
+        "footprintMarginPx": 261.57,
+        "surveyTarget": "SPS_085271_S12",
+        "visitId": "6dcd17812776887033b1a177512f9718",
+        "wavelengthUm": 4.9282073974609375,
+        "bandwidthUm": 0.03679152950644493,
+        "midUtc": "2025-08-15T20:46:08.896Z",
+        "wavelengthCalibration": "cwave-cband",
+        "units": "MJy/sr",
+        "stretch": [
+          0.4571918547153473,
+          11.686313991546639
+        ],
+        "coverageFraction": 0.906064209274673,
+        "validFraction": 0.8347205707491082,
+        "flags": [
+          "transient",
+          "overflow",
+          "sampling error",
+          "nonfunctional",
+          "cold pixel",
+          "persistence",
+          "bloom",
+          "halo"
+        ],
+        "warnings": [
+          "Some pixels are masked or outside the exposure.",
+          "Saturation or associated artifacts are present in the cutout."
+        ],
+        "processingVersion": "tan-bilinear-v1",
+        "psfFwhmArcsec": 9.041940402463002,
+        "transferBytes": 3962880,
+        "wavelengthCalibrationId": "spectral_wcs_D6_spx_cal-swcs-v5-2026-191.fits",
+        "imageUrl": "/presets/barnard/e4c9e1555ad886b01a52e5fa.png",
+        "maskUrl": "/presets/barnard/e4c9e1555ad886b01a52e5fa-mask.png"
+      },
+      {
+        "frameId": "75a90c9611ab097fb004bb2c265e7704",
+        "productId": "level2_2026W12_2A_0520_4D6_spx_l2b-v27-2026-235",
+        "obsId": "2026W12_2A_0520_4",
+        "release": "DR1",
+        "detector": 6,
+        "startUtc": "2026-03-22T08:50:47.183Z",
+        "endUtc": "2026-03-22T08:52:42.300Z",
+        "slotKey": "2026-03-22",
+        "archiveUrl": "https://irsa.ipac.caltech.edu/ibe/data/spherex/dr1/level2/2026W12_2A/l2b-v27-2026-235/6/level2_2026W12_2A_0520_4D6_spx_l2b-v27-2026-235.fits",
+        "archiveDoi": "10.26131/IRSA678",
+        "state": "prepared",
+        "detectorWavelengthRangeUm": [
+          4.4115,
+          5.009600000000001
+        ],
+        "estimatedDetectorXY": [
+          453.9687754568744,
+          256.010388617972
+        ],
+        "footprintMarginPx": 256.01,
+        "surveyTarget": "SPS_015668_S12",
+        "visitId": "eb396974ec3ccbc58806984e88dd119c",
+        "wavelengthUm": 4.929935455322266,
+        "bandwidthUm": 0.03821626678109169,
+        "midUtc": "2026-03-22T08:51:44.742Z",
+        "wavelengthCalibration": "cwave-cband",
+        "units": "MJy/sr",
+        "stretch": [
+          0.4571918547153473,
+          11.686313991546639
+        ],
+        "coverageFraction": 1.0,
+        "validFraction": 0.9476813317479191,
+        "flags": [
+          "transient",
+          "overflow",
+          "sampling error",
+          "nonfunctional",
+          "bloom",
+          "halo"
+        ],
+        "warnings": [
+          "Some pixels are masked or outside the exposure.",
+          "Saturation or associated artifacts are present in the cutout."
+        ],
+        "processingVersion": "tan-bilinear-v1",
+        "psfFwhmArcsec": 9.041940402463002,
+        "transferBytes": 3974400,
+        "wavelengthCalibrationId": "spectral_wcs_D6_spx_cal-swcs-v5-2026-191.fits",
+        "imageUrl": "/presets/barnard/992a037e054c0e6f17b1e475.png",
+        "maskUrl": "/presets/barnard/992a037e054c0e6f17b1e475-mask.png"
+      },
+      {
+        "frameId": "2287fa36ac4aa61297f4507bf3b6904a",
+        "productId": "level2_2026W34_1A_0176_2D6_spx_l2b-v27-2026-243",
+        "obsId": "2026W34_1A_0176_2",
+        "release": "QR3",
+        "detector": 6,
+        "startUtc": "2026-08-17T20:25:21.494Z",
+        "endUtc": "2026-08-17T20:27:16.612Z",
+        "slotKey": "2026-08-17",
+        "archiveUrl": "https://irsa.ipac.caltech.edu/ibe/data/spherex/qr3/level2/2026W34_1A/l2b-v27-2026-243/6/level2_2026W34_1A_0176_2D6_spx_l2b-v27-2026-243.fits",
+        "archiveDoi": "10.26131/IRSA662",
+        "state": "prepared",
+        "detectorWavelengthRangeUm": [
+          4.4115,
+          5.009600000000001
+        ],
+        "estimatedDetectorXY": [
+          1516.9584095856287,
+          213.80157725355073
+        ],
+        "footprintMarginPx": 213.8,
+        "surveyTarget": "SPS_085270_S34",
+        "visitId": "5bba28052482ca2837cc58df038a1bd7",
+        "wavelengthUm": 4.941451549530029,
+        "bandwidthUm": 0.03723180666565895,
+        "midUtc": "2026-08-17T20:26:19.053Z",
+        "wavelengthCalibration": "cwave-cband",
+        "units": "MJy/sr",
+        "stretch": [
+          0.4571918547153473,
+          11.686313991546639
+        ],
+        "coverageFraction": 1.0,
+        "validFraction": 0.9131985731272295,
+        "flags": [
+          "transient",
+          "overflow",
+          "sampling error",
+          "nonfunctional",
+          "cold pixel",
+          "persistence",
+          "bloom",
+          "halo"
+        ],
+        "warnings": [
+          "Some pixels are masked or outside the exposure.",
+          "Saturation or associated artifacts are present in the cutout."
+        ],
+        "processingVersion": "tan-bilinear-v1",
+        "psfFwhmArcsec": 9.041940402463002,
+        "transferBytes": 3974400,
+        "wavelengthCalibrationId": "spectral_wcs_D6_spx_cal-swcs-v5-2026-191.fits",
+        "imageUrl": "/presets/barnard/13c9ceb3076c4025fdbe4c96.png",
+        "maskUrl": "/presets/barnard/13c9ceb3076c4025fdbe4c96-mask.png"
+      }
+    ],
+    "seriesId": "preset-barnard",
+    "title": "Barnard\u2019s Star",
+    "baselineDays": 366.9862286689815,
+    "catalogReference": {
+      "id": "HIP 87937",
+      "source": "https://simbad.cds.unistra.fr/simbad/sim-id?Ident=HIP+87937",
+      "epoch": "J2026.0"
+    },
+    "presetSlug": "barnard",
+    "referenceStretch": [
+      0.4571918547153473,
+      11.686313991546639
+    ],
+    "fixtureSelection": "Independent matched cutouts",
+    "sourceReleases": [
+      "DR1",
+      "QR3"
+    ],
+    "downloadBytes": 3974400,
+    "generationSeconds": 10.55
+  },
+  "warnings": [
+    "This example contains a selected, wavelength-matched subset of the archive index.",
+    "Observation-era field from the archive audit. The bright core may saturate. Motion requires a verified relative registration and target centroid."
+  ]
+}
