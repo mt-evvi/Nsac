@@ -1,0 +1,262 @@
+{
+  "status": "succeeded",
+  "data": {
+    "schemaVersion": 1,
+    "pipelineVersion": "irsa-tan-v1",
+    "query": {
+      "raDeg": 331.09656943,
+      "decDeg": -56.80083957,
+      "fovArcmin": 3,
+      "start": "2025-04-01",
+      "end": "2026-11-14",
+      "frame": "ICRS"
+    },
+    "grid": {
+      "projection": "TAN",
+      "frame": "ICRS",
+      "width": 29,
+      "height": 29,
+      "crpix": [
+        15.0,
+        15.0
+      ],
+      "crval": [
+        331.09656943,
+        -56.80083957
+      ],
+      "cd": [
+        [
+          -0.0017241379310344827,
+          0.0
+        ],
+        [
+          0.0,
+          0.0017241379310344827
+        ]
+      ],
+      "pixelConvention": "zero-based centers, y increases north"
+    },
+    "counts": {
+      "products": 463,
+      "pointings": 241,
+      "observationDates": 60,
+      "independentEpochs": 31,
+      "preparedFrames": 3
+    },
+    "searchStatus": "OK",
+    "complete": true,
+    "warnings": [
+      "This example contains a selected, wavelength-matched subset of the archive index.",
+      "Centers the brown-dwarf pair separately from Epsilon Indi A using the observation-era audit position. The two companions fall below the native pixel scale."
+    ],
+    "collections": [
+      {
+        "collection": "spherex_dr1",
+        "release": "DR1",
+        "doi": "10.26131/IRSA678",
+        "complete": true,
+        "successful": true,
+        "rows": 343
+      },
+      {
+        "collection": "spherex_qr3",
+        "release": "QR3",
+        "doi": "10.26131/IRSA662",
+        "complete": true,
+        "successful": true,
+        "rows": 120
+      }
+    ],
+    "visitGrouping": "Consecutive pointings less than 24 hours apart",
+    "frames": [
+      {
+        "frameId": "3baf1794c53a41a408a2a8ec00479619",
+        "surveyPass": "Survey 2",
+        "productId": "level2_2025W41_2B_0301_1D4_spx_l2b-v27-2026-242",
+        "obsId": "2025W41_2B_0301_1",
+        "release": "DR1",
+        "detector": 4,
+        "startUtc": "2025-10-10T20:22:54.824Z",
+        "endUtc": "2025-10-10T20:24:49.942Z",
+        "slotKey": "2025-10-10",
+        "archiveUrl": "https://irsa.ipac.caltech.edu/ibe/data/spherex/dr1/level2/2025W41_2B/l2b-v27-2026-242/4/level2_2025W41_2B_0301_1D4_spx_l2b-v27-2026-242.fits",
+        "archiveDoi": "10.26131/IRSA678",
+        "state": "prepared",
+        "detectorWavelengthRangeUm": [
+          2.4027,
+          3.8473000000000006
+        ],
+        "estimatedDetectorXY": [
+          571.7753939818102,
+          1820.9303127907317
+        ],
+        "footprintMarginPx": 218.07,
+        "surveyTarget": "SPS_126717_S12",
+        "visitId": "9215fc2030f0d7575fccde70e91777b1",
+        "wavelengthUm": 2.498112916946411,
+        "bandwidthUm": 0.07179849594831467,
+        "midUtc": "2025-10-10T20:23:52.383Z",
+        "wavelengthCalibration": "cwave-cband",
+        "units": "MJy/sr",
+        "stretch": [
+          0.13168609887361526,
+          0.8385545045137404
+        ],
+        "coverageFraction": 0.9964328180737217,
+        "validFraction": 0.5184304399524375,
+        "flags": [
+          "transient",
+          "sampling error",
+          "nonfunctional",
+          "persistence",
+          "outlier",
+          "halo"
+        ],
+        "warnings": [
+          "Some pixels are masked or outside the exposure."
+        ],
+        "processingVersion": "tan-bilinear-v1",
+        "psfFwhmArcsec": 8.672612363488842,
+        "transferBytes": 3974400,
+        "wavelengthCalibrationId": "spectral_wcs_D4_spx_cal-swcs-v5-2026-191.fits",
+        "imageUrl": "/presets/epsilon-indi-b/101fff2caa04bb4202b55ff3.png",
+        "maskUrl": "/presets/epsilon-indi-b/101fff2caa04bb4202b55ff3-mask.png"
+      },
+      {
+        "frameId": "b8c200c788ecd23df487749dee88830e",
+        "surveyPass": "Survey 2",
+        "productId": "level2_2025W42_2A_0059_1D4_spx_l2b-v27-2026-243",
+        "obsId": "2025W42_2A_0059_1",
+        "release": "DR1",
+        "detector": 4,
+        "startUtc": "2025-10-16T18:05:52.565Z",
+        "endUtc": "2025-10-16T18:07:47.683Z",
+        "slotKey": "2025-10-16",
+        "archiveUrl": "https://irsa.ipac.caltech.edu/ibe/data/spherex/dr1/level2/2025W42_2A/l2b-v27-2026-243/4/level2_2025W42_2A_0059_1D4_spx_l2b-v27-2026-243.fits",
+        "archiveDoi": "10.26131/IRSA678",
+        "state": "prepared",
+        "detectorWavelengthRangeUm": [
+          2.4027,
+          3.8473000000000006
+        ],
+        "estimatedDetectorXY": [
+          570.8788435900891,
+          1821.1363567491876
+        ],
+        "footprintMarginPx": 217.86,
+        "surveyTarget": "SPS_126717_S12",
+        "visitId": "0160e0b247fb86eab6269648b79cfcc5",
+        "wavelengthUm": 2.4978890419006348,
+        "bandwidthUm": 0.07181039452552795,
+        "midUtc": "2025-10-16T18:06:50.124Z",
+        "wavelengthCalibration": "cwave-cband",
+        "units": "MJy/sr",
+        "stretch": [
+          0.13168609887361526,
+          0.8385545045137404
+        ],
+        "coverageFraction": 0.9976218787158145,
+        "validFraction": 0.7146254458977408,
+        "flags": [
+          "transient",
+          "sampling error",
+          "nonfunctional",
+          "persistence",
+          "outlier",
+          "halo"
+        ],
+        "warnings": [
+          "Some pixels are masked or outside the exposure."
+        ],
+        "processingVersion": "tan-bilinear-v1",
+        "psfFwhmArcsec": 8.672612363488842,
+        "transferBytes": 3974400,
+        "wavelengthCalibrationId": "spectral_wcs_D4_spx_cal-swcs-v5-2026-191.fits",
+        "imageUrl": "/presets/epsilon-indi-b/ad6b3d5eb914b708a1f44aa8.png",
+        "maskUrl": "/presets/epsilon-indi-b/ad6b3d5eb914b708a1f44aa8-mask.png"
+      },
+      {
+        "frameId": "38ab4a1577b945df9aaa4a195bec596b",
+        "surveyPass": "Survey 1",
+        "productId": "level2_2026W17_1B_0162_4D4_spx_l2b-v27-2026-242",
+        "obsId": "2026W17_1B_0162_4",
+        "release": "DR1",
+        "detector": 4,
+        "startUtc": "2026-04-20T19:39:28.357Z",
+        "endUtc": "2026-04-20T19:41:23.475Z",
+        "slotKey": "2026-04-20",
+        "archiveUrl": "https://irsa.ipac.caltech.edu/ibe/data/spherex/dr1/level2/2026W17_1B/l2b-v27-2026-242/4/level2_2026W17_1B_0162_4D4_spx_l2b-v27-2026-242.fits",
+        "archiveDoi": "10.26131/IRSA678",
+        "state": "prepared",
+        "detectorWavelengthRangeUm": [
+          2.4027,
+          3.8473000000000006
+        ],
+        "estimatedDetectorXY": [
+          1724.0173949661637,
+          1792.6725974108776
+        ],
+        "footprintMarginPx": 246.33,
+        "surveyTarget": "SPS_056827_S12",
+        "visitId": "3b695c760edfb766bf74aca609ebc704",
+        "wavelengthUm": 2.5220165252685547,
+        "bandwidthUm": 0.07338722795248032,
+        "midUtc": "2026-04-20T19:40:25.916Z",
+        "wavelengthCalibration": "cwave-cband",
+        "units": "MJy/sr",
+        "stretch": [
+          0.13168609887361526,
+          0.8385545045137404
+        ],
+        "coverageFraction": 0.990487514863258,
+        "validFraction": 0.9143876337693222,
+        "flags": [
+          "transient",
+          "overflow",
+          "sampling error",
+          "nonfunctional",
+          "outlier",
+          "halo"
+        ],
+        "warnings": [
+          "Some pixels are masked or outside the exposure.",
+          "Saturation or associated artifacts are present in the cutout."
+        ],
+        "processingVersion": "tan-bilinear-v1",
+        "psfFwhmArcsec": 8.672612363488842,
+        "transferBytes": 3974400,
+        "wavelengthCalibrationId": "spectral_wcs_D4_spx_cal-swcs-v5-2026-191.fits",
+        "imageUrl": "/presets/epsilon-indi-b/b84223ccb500b900f2f4e7da.png",
+        "maskUrl": "/presets/epsilon-indi-b/b84223ccb500b900f2f4e7da-mask.png"
+      }
+    ],
+    "seriesId": "preset-epsilon-indi-b",
+    "title": "Epsilon Indi B",
+    "baselineDays": 191.96983255787038,
+    "catalogReference": {
+      "id": "2MASS J22041052−5646577",
+      "source": "https://www.aanda.org/articles/aa/pdf/2004/03/aa0292.pdf",
+      "epoch": "J2026.0",
+      "referenceRaDeg": 331.043833333,
+      "referenceDecDeg": -56.782694444,
+      "referenceEpoch": "1999.855",
+      "pmRaCosDecMasYr": 3976,
+      "pmDecMasYr": -2500
+    },
+    "presetSlug": "epsilon-indi-b",
+    "referenceStretch": [
+      0.13168609887361526,
+      0.8385545045137404
+    ],
+    "fixtureSelection": "Independent matched cutouts",
+    "sourceReleases": [
+      "DR1"
+    ],
+    "downloadBytes": 11923200,
+    "generationSeconds": 35.2
+  },
+  "warnings": [
+    "This example contains a selected, wavelength-matched subset of the archive index.",
+    "Centers the brown-dwarf pair separately from Epsilon Indi A using the observation-era audit position. The two companions fall below the native pixel scale."
+  ]
+}

@@ -1,0 +1,12 @@
+{$SPHEREX_HOST:spherex.example.org} {
+	encode zstd gzip
+	request_body /api/* {
+		max_size 16KB
+	}
+	reverse_proxy 127.0.0.1:8765 {
+		transport http {
+			dial_timeout 3s
+			response_header_timeout 15s
+		}
+	}
+}

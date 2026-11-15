@@ -1,0 +1,271 @@
+{
+  "status": "succeeded",
+  "data": {
+    "schemaVersion": 1,
+    "pipelineVersion": "irsa-tan-v1",
+    "query": {
+      "raDeg": 76.95654167,
+      "decDeg": 30.40144444,
+      "fovArcmin": 3,
+      "start": "2025-04-01",
+      "end": "2026-11-14",
+      "frame": "ICRS"
+    },
+    "grid": {
+      "projection": "TAN",
+      "frame": "ICRS",
+      "width": 29,
+      "height": 29,
+      "crpix": [
+        15.0,
+        15.0
+      ],
+      "crval": [
+        76.95654167,
+        30.40144444
+      ],
+      "cd": [
+        [
+          -0.0017241379310344827,
+          0.0
+        ],
+        [
+          0.0,
+          0.0017241379310344827
+        ]
+      ],
+      "pixelConvention": "zero-based centers, y increases north"
+    },
+    "counts": {
+      "products": 336,
+      "pointings": 168,
+      "observationDates": 35,
+      "independentEpochs": 17,
+      "preparedFrames": 3
+    },
+    "searchStatus": "OK",
+    "complete": true,
+    "warnings": [
+      "This example contains a selected, wavelength-matched subset of the archive index.",
+      "Near-infrared imaging of an unresolved binary. Inspect masking and blending before making a photometric claim."
+    ],
+    "collections": [
+      {
+        "collection": "spherex_dr1",
+        "release": "DR1",
+        "doi": "10.26131/IRSA678",
+        "complete": true,
+        "successful": true,
+        "rows": 226
+      },
+      {
+        "collection": "spherex_qr3",
+        "release": "QR3",
+        "doi": "10.26131/IRSA662",
+        "complete": true,
+        "successful": true,
+        "rows": 110
+      }
+    ],
+    "visitGrouping": "Consecutive pointings less than 24 hours apart",
+    "frames": [
+      {
+        "frameId": "07aa91599f55f36639c758bdfff04471",
+        "surveyPass": "Survey 1",
+        "productId": "level2_2025W36_1A_0663_1D1_spx_l2b-v27-2026-232",
+        "obsId": "2025W36_1A_0663_1",
+        "release": "DR1",
+        "detector": 1,
+        "startUtc": "2025-09-03T23:53:31.971Z",
+        "endUtc": "2025-09-03T23:55:27.089Z",
+        "slotKey": "2025-09-03",
+        "archiveUrl": "https://irsa.ipac.caltech.edu/ibe/data/spherex/dr1/level2/2025W36_1A/l2b-v27-2026-232/1/level2_2025W36_1A_0663_1D1_spx_l2b-v27-2026-232.fits",
+        "archiveDoi": "10.26131/IRSA678",
+        "state": "prepared",
+        "detectorWavelengthRangeUm": [
+          0.7455,
+          1.1167
+        ],
+        "estimatedDetectorXY": [
+          151.5263058513513,
+          703.6264595785866
+        ],
+        "footprintMarginPx": 151.53,
+        "surveyTarget": "SPS_004046_S12",
+        "visitId": "38b22f22589db2cc8c3b7d71efb8ad31",
+        "wavelengthUm": 0.97212153673172,
+        "bandwidthUm": 0.025052860379219055,
+        "midUtc": "2025-09-03T23:54:29.530Z",
+        "wavelengthCalibration": "cwave-cband",
+        "units": "MJy/sr",
+        "stretch": [
+          0.42099644541740416,
+          9.576551980972285
+        ],
+        "coverageFraction": 1.0,
+        "validFraction": 0.9215219976218787,
+        "flags": [
+          "transient",
+          "overflow",
+          "sampling error",
+          "nonfunctional",
+          "cold pixel",
+          "persistence",
+          "outlier",
+          "crosstalk",
+          "halo"
+        ],
+        "warnings": [
+          "Some pixels are masked or outside the exposure.",
+          "Saturation or associated artifacts are present in the cutout."
+        ],
+        "processingVersion": "tan-bilinear-v1",
+        "psfFwhmArcsec": 7.530770327317724,
+        "transferBytes": 3977280,
+        "wavelengthCalibrationId": "spectral_wcs_D1_spx_cal-swcs-v5-2026-191.fits",
+        "imageUrl": "/presets/rw-aurigae/4a8c6df47b01253d2acc6780.png",
+        "maskUrl": "/presets/rw-aurigae/4a8c6df47b01253d2acc6780-mask.png"
+      },
+      {
+        "frameId": "067131a0d7670665879363cbd9611168",
+        "surveyPass": "Survey 2",
+        "productId": "level2_2026W10_2B_0137_2D1_spx_l2b-v27-2026-231",
+        "obsId": "2026W10_2B_0137_2",
+        "release": "DR1",
+        "detector": 1,
+        "startUtc": "2026-03-06T05:33:03.427Z",
+        "endUtc": "2026-03-06T05:34:58.545Z",
+        "slotKey": "2026-03-06",
+        "archiveUrl": "https://irsa.ipac.caltech.edu/ibe/data/spherex/dr1/level2/2026W10_2B/l2b-v27-2026-231/1/level2_2026W10_2B_0137_2D1_spx_l2b-v27-2026-231.fits",
+        "archiveDoi": "10.26131/IRSA678",
+        "state": "prepared",
+        "detectorWavelengthRangeUm": [
+          0.7455,
+          1.1167
+        ],
+        "estimatedDetectorXY": [
+          552.593474966954,
+          707.5183385551909
+        ],
+        "footprintMarginPx": 552.59,
+        "surveyTarget": "SPS_073604_S12",
+        "visitId": "1ba609a4d919acc5bfaf3a3e02af7705",
+        "wavelengthUm": 0.9648139476776123,
+        "bandwidthUm": 0.025354482233524323,
+        "midUtc": "2026-03-06T05:34:00.986Z",
+        "wavelengthCalibration": "cwave-cband",
+        "units": "MJy/sr",
+        "stretch": [
+          0.42099644541740416,
+          9.576551980972285
+        ],
+        "coverageFraction": 1.0,
+        "validFraction": 0.9334126040428062,
+        "flags": [
+          "transient",
+          "overflow",
+          "sampling error",
+          "nonfunctional",
+          "cold pixel",
+          "persistence",
+          "outlier",
+          "halo"
+        ],
+        "warnings": [
+          "Some pixels are masked or outside the exposure.",
+          "Saturation or associated artifacts are present in the cutout."
+        ],
+        "processingVersion": "tan-bilinear-v1",
+        "psfFwhmArcsec": 7.530770327317724,
+        "transferBytes": 3977280,
+        "wavelengthCalibrationId": "spectral_wcs_D1_spx_cal-swcs-v5-2026-191.fits",
+        "imageUrl": "/presets/rw-aurigae/6967781f92644b2b23ff8a42.png",
+        "maskUrl": "/presets/rw-aurigae/6967781f92644b2b23ff8a42-mask.png"
+      },
+      {
+        "frameId": "348bad3e2bee738697956a46b7bb03a9",
+        "surveyPass": "Survey 3",
+        "productId": "level2_2026W37_1A_0524_1D1_spx_l2b-v27-2026-255",
+        "obsId": "2026W37_1A_0524_1",
+        "release": "QR3",
+        "detector": 1,
+        "startUtc": "2026-09-09T21:42:13.876Z",
+        "endUtc": "2026-09-09T21:44:08.994Z",
+        "slotKey": "2026-09-09",
+        "archiveUrl": "https://irsa.ipac.caltech.edu/ibe/data/spherex/qr3/level2/2026W37_1A/l2b-v27-2026-255/1/level2_2026W37_1A_0524_1D1_spx_l2b-v27-2026-255.fits",
+        "archiveDoi": "10.26131/IRSA662",
+        "state": "prepared",
+        "detectorWavelengthRangeUm": [
+          0.7455,
+          1.1167
+        ],
+        "estimatedDetectorXY": [
+          265.0936640847748,
+          683.0048834974235
+        ],
+        "footprintMarginPx": 265.09,
+        "surveyTarget": "SPS_002226_S34",
+        "visitId": "6ddef877a52d95f6e1f5a0121ef42266",
+        "wavelengthUm": 0.9738754630088806,
+        "bandwidthUm": 0.025865281000733376,
+        "midUtc": "2026-09-09T21:43:11.435Z",
+        "wavelengthCalibration": "cwave-cband",
+        "units": "MJy/sr",
+        "stretch": [
+          0.42099644541740416,
+          9.576551980972285
+        ],
+        "coverageFraction": 1.0,
+        "validFraction": 0.7491082045184304,
+        "flags": [
+          "transient",
+          "overflow",
+          "sampling error",
+          "nonfunctional",
+          "cold pixel",
+          "outlier",
+          "crosstalk",
+          "bloom",
+          "halo"
+        ],
+        "warnings": [
+          "Some pixels are masked or outside the exposure.",
+          "Saturation or associated artifacts are present in the cutout."
+        ],
+        "processingVersion": "tan-bilinear-v1",
+        "psfFwhmArcsec": 7.530770327317724,
+        "transferBytes": 3977280,
+        "wavelengthCalibrationId": "spectral_wcs_D1_spx_cal-swcs-v5-2026-191.fits",
+        "imageUrl": "/presets/rw-aurigae/8e9bb0d4803db99a73b71242.png",
+        "maskUrl": "/presets/rw-aurigae/8e9bb0d4803db99a73b71242-mask.png"
+      }
+    ],
+    "seriesId": "preset-rw-aurigae",
+    "title": "RW Aurigae",
+    "baselineDays": 370.90881834490744,
+    "catalogReference": {
+      "id": "RW Aur",
+      "source": "https://vsx.aavso.org/index.php?revid=418953&view=detail.top",
+      "epoch": "J2000",
+      "referenceRaDeg": 76.95654167,
+      "referenceDecDeg": 30.40144444,
+      "referenceEpoch": "J2000"
+    },
+    "presetSlug": "rw-aurigae",
+    "referenceStretch": [
+      0.42099644541740416,
+      9.576551980972285
+    ],
+    "fixtureSelection": "Independent matched cutouts",
+    "sourceReleases": [
+      "DR1",
+      "QR3"
+    ],
+    "downloadBytes": 7954560,
+    "generationSeconds": 12.12
+  },
+  "warnings": [
+    "This example contains a selected, wavelength-matched subset of the archive index.",
+    "Near-infrared imaging of an unresolved binary. Inspect masking and blending before making a photometric claim."
+  ]
+}
