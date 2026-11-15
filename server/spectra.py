@@ -131,7 +131,8 @@ def source_photometry(hdul, frame, source, method, store, deadline, calibration_
     return {"wavelengthUm": float(wave), "bandwidthUm": float(band), "flux": float(flux), "error": float(error),
             "fitQuality": fit_quality, "units": "µJy", "sampleStatus": "measured", "method": provenance,
             "calibrationIds": ids, "startUtc": imaging.timestamp(header, "DATE-BEG"),
-            "productId": frame["productId"], "frameId": frame["frameId"], "archiveUrl": frame["archiveUrl"]}
+            "productId": frame["productId"], "frameId": frame["frameId"], "archiveUrl": frame["archiveUrl"],
+            "detector": detector, "visitId": frame.get("visitId")}
 
 
 def extract(manifest, options, linked, store):

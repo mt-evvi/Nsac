@@ -25,6 +25,7 @@ from .store import content_key
 from .upstream import IRSA, TransferBudget, UpstreamError, check_url, fetch
 
 PIPELINE_VERSION = "irsa-tan-v2"
+COMPATIBLE_INDEX_VERSIONS = ("irsa-tan-v1",)
 COLLECTIONS = (("spherex_dr1", "DR1", "10.26131/IRSA678"), ("spherex_qr3", "QR3", "10.26131/IRSA662"))
 MISSION_START = date(2025, 4, 1)
 ROW_LIMIT = 500

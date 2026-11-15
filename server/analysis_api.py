@@ -12,6 +12,7 @@ from .workers import run_science
 
 router = APIRouter(prefix="/api/v1/series/{series_id}")
 ANALYSIS_VERSION = "v2"
+SPECTRUM_VERSION = "v3"
 
 
 def dataset(service, series_id, frame_id, grid):
@@ -145,7 +146,7 @@ def spectrum(series_id: ID, options: SpectrumQuery, request: Request):
     service = request.app.state.service
     manifest = service.manifest(series_id)["data"]
     linked = candidate(service, series_id, options.candidateId) if options.candidateId else None
-    key = content_key(ANALYSIS_VERSION, "spectrum", series_id, options.model_dump(mode="json"))
+    key = content_key(SPECTRUM_VERSION, "spectrum", series_id, options.model_dump(mode="json"))
 
     def work():
         result = spectra.extract(manifest, options.model_dump(mode="json", exclude_none=True), linked, service.store)

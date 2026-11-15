@@ -110,7 +110,8 @@ async function data<T>(url: string, signal: AbortSignal, body?: object, announce
       if (result.status === 'failed') throw new ServiceError(result.error.message, result.error.code)
       if (!('jobId' in result) || !/^[\w-]{1,80}$/.test(result.jobId)) throw new Error('Invalid job response.')
       job = result.jobId
-      if (round >= 40) throw new Error('The request exceeded its browser polling deadline.')
+      const maxPolls = url.endsWith('/spectra') ? 54 : 40
+      if (round >= maxPolls) throw new Error('The request exceeded its browser polling deadline.')
       if (announce) note(result.status === 'queued' ? 'Waiting for a processing slot…' : `${result.stage.charAt(0).toUpperCase()}${result.stage.slice(1)}…`)
       await delay(Math.max(1000, result.pollAfterMs, round > 10 ? 3000 : 0), signal)
     }
@@ -192,13 +193,14 @@ function timeline(index: number, frame?: Frame) {
   button('play').disabled = slots.length < 2
   el('timeline-note').textContent = slots.length === 1 ? 'Only one usable date is available in this selection. Playback requires at least two dates.' : `${manifest?.counts.observationDates ?? 0} archive dates · ${prepared.size} prepared in this session · ${slots.length} occupied intervals`
 }
-function readImage(url: string, signal: AbortSignal) {
+function readImage(url: string, signal: AbortSignal, priority: "auto" | "low" = "auto") {
   const asset = url.startsWith('/presets/') ? `${appBase}${url.slice(1)}` : url
   const checked = sameOrigin(asset, asset.startsWith(`${appBase}presets/`) ? `${appBase}presets/` : '/data/')
   if (raster.has(checked)) return Promise.resolve(raster.get(checked)!)
   return new Promise<HTMLImageElement>((resolve, reject) => {
     if (signal.aborted) return reject(signal.reason)
     const image = new Image()
+    image.fetchPriority = priority
     const finish = (error?: unknown) => {
       signal.removeEventListener('abort', stop)
       if (error) reject(error)
@@ -342,6 +344,9 @@ async function choose(index: number, options: { specific?: Frame; nextUsable?: b
         const warning = [...(attempts ? ['Earlier candidate exposures were unavailable.'] : []), ...lastWarnings].join(' ')
         note(warning || 'Observation ready.')
         retrySlot = undefined
+        const next = slots[slots.indexOf(group) + 1]?.[0]
+        const neighbor = next && (prepared.get(next.frameId) ?? next)
+        if (neighbor?.imageUrl) void readImage(neighbor.imageUrl, signal, 'low').catch(() => {})
         return true
       } catch (error) {
         if (signal.aborted || generation !== selectionId) return false

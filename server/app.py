@@ -184,14 +184,21 @@ def create_app(settings=SETTINGS):
 
         service = request.app.state.service
         normalized = query.normalized()
-        series_id = content_key("series", getattr(archive, "PIPELINE_VERSION", "1"), normalized,
-                                datetime.now(UTC).date().isoformat() if "end" not in normalized else None)
+        day = datetime.now(UTC).date().isoformat() if "end" not in normalized else None
+        series_id = content_key("series", archive.PIPELINE_VERSION, normalized, day)
         row = service.store.get("series", series_id)
+        legacy = False
+        if row is None:
+            for version in archive.COMPATIBLE_INDEX_VERSIONS:
+                prior = service.store.get("series", content_key("series", version, normalized, day))
+                if prior and prior[1] <= settings.stale_ttl and prior[0]["data"].get("frames"):
+                    row, legacy = prior, True
+                    break
         if row is not None:
             data, age = row
             no_coverage = data["data"].get("searchStatus") in {"NO_COVERAGE", "NO_COMPARABLE_FRAMES"}
             ttl = settings.empty_ttl if no_coverage or data["status"] == "partial" else settings.metadata_ttl
-            if age < ttl:
+            if age < ttl and not legacy:
                 return service.page(data)
 
         def work():
@@ -212,7 +219,8 @@ def create_app(settings=SETTINGS):
             response = None
         if has_stale:
             checked = datetime.fromtimestamp(datetime.now(UTC).timestamp() - age, UTC).isoformat()
-            warning = f"Showing cached archive metadata checked {checked}. Refresh for newly published observations."
+            origin = " from the preceding compatible index" if legacy else ""
+            warning = f"Showing cached archive metadata{origin} checked {checked}. Refresh for newly published observations."
             return service.page({**data, "status": "partial", "warnings": [*data["warnings"], warning]})
         return response
 

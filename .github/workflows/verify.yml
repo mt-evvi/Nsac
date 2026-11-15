@@ -36,7 +36,7 @@ jobs:
           SPHEREX_CACHE="$RUNNER_TEMP/spherex-cache" SPHEREX_DISK_RESERVE_BYTES=0 python -m uvicorn server.app:app --host 127.0.0.1 --port 4173 > "$RUNNER_TEMP/spherex.log" 2>&1 &
           trap 'kill "$!"' EXIT
           curl --fail --retry 7 --retry-connrefused --retry-delay 1 http://127.0.0.1:4173/readyz
-          if ! node web/scripts/browser-smoke.mjs; then
+          if ! node web/scripts/browser-smoke.mjs || ! node web/scripts/browser-time-network.mjs; then
             cat "$RUNNER_TEMP/spherex.log"
             exit 1
           fi

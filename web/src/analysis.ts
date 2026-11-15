@@ -29,6 +29,7 @@ type Track = {
 type SpectrumSample = {
   wavelengthUm: number | null; flux?: number | null; units?: string; error?: number | null; startUtc: string | null
   sampleStatus: 'measured' | 'missing'; reason?: string; channel?: number; productId?: string; bandwidthUm?: number
+  detector?: number; visitId?: string
 }
 type Spectrum = {samples: SpectrumSample[]; mode: string; units: string; referenceUrl: string; warnings: string[]}
 
@@ -36,6 +37,8 @@ export type AnalysisApi = {
   manifest(): Manifest | undefined
   shown(): Frame | undefined
   paired(): Frame | undefined
+  displayed?(target: Pane): Frame | undefined
+  displayMode?(): string
   prepare(frame: Frame, signal: AbortSignal, representation?: string): Promise<Frame>
   showPrepared(frame: Frame): Promise<void>
   data<T>(url: string, signal: AbortSignal, body?: object, announce?: boolean): Promise<Envelope<T>>
@@ -766,6 +769,13 @@ export function installAnalysis(api: AnalysisApi) {
       'Exposure spectrum. Each sample has its own observation date.'))
     if (usable.length) spectrumOutput.append(plotSpectrum(samples, spectrum.units))
     else spectrumOutput.append(node('p', 'No measured spectral samples are available in these bounds.'))
+    const lightCurve = matchedLightCurve(usable)
+    if (lightCurve.length >= 2) {
+      const panel = node('details')
+      panel.append(node('summary', 'Matched-wavelength light curve'), node('p',
+        `Detector ${lightCurve[0].detector} · one fitted flux per independent visit.`), plotSpectrum(lightCurve, spectrum.units, true))
+      spectrumOutput.append(panel)
+    }
     for (const warning of distinctWarnings(spectrum.warnings ?? [], warnings)) spectrumOutput.append(node('p', warning))
     const table = node('table')
     table.className = 'sample-table'
@@ -800,8 +810,9 @@ export function installAnalysis(api: AnalysisApi) {
     for (const pane of ['track-panel', 'catalog-panel', 'spectrum-panel']) $(pane).hidden = !a
     coaddRegion.hidden = !a
     coadd.disabled = !a || a.representation === 'coadd'
-    markA.disabled = !a
-    markB.disabled = !b || Boolean($('frame-b').hidden)
+    const showExposure = !api.displayMode || ['single', 'side'].includes(api.displayMode())
+    markA.disabled = !a || !showExposure
+    markB.disabled = !b || !showExposure || Boolean($('frame-b').hidden)
     markA.title = `Place a mark on ${titleFor('a')}`
     markB.title = markB.disabled ? 'Open Side by side to place a mark on image B.' : `Place a mark on ${titleFor('b')}`
     measure.disabled = marks.size !== 2 || !a || !b || a.visitId === b.visitId
@@ -829,7 +840,8 @@ export function installAnalysis(api: AnalysisApi) {
   }
 
   function redraw() {
-    for (const [pane, frame] of panes()) {
+    for (const [pane, preferred] of panes()) {
+      const frame = api.displayed ? api.displayed(pane) : preferred
       if (!frame || (pane === 'b' && $('frame-b').hidden)) continue
       for (const catalog of selectedCatalogs) {
         for (const marker of projectedCatalog(catalog, frame)) {
@@ -926,39 +938,65 @@ export function installAnalysis(api: AnalysisApi) {
   changed()
 }
 
-function plotSpectrum(samples: SpectrumSample[], units: string) {
+export function matchedLightCurve(samples: SpectrumSample[]) {
+  const valid = samples.filter(sample => sample.sampleStatus === 'measured' && finite(sample.flux)
+    && finite(sample.wavelengthUm) && finite(sample.bandwidthUm) && sample.bandwidthUm > 0
+    && sample.detector && sample.visitId && sample.startUtc && Number.isFinite(Date.parse(sample.startUtc)))
+  let best: SpectrumSample[] = []
+  for (const anchor of valid) {
+    const visits = new Map<string, SpectrumSample>()
+    const nearby = valid.filter(sample => sample.detector === anchor.detector
+      && Math.abs(sample.wavelengthUm! - anchor.wavelengthUm!) <= Math.min(sample.bandwidthUm!, anchor.bandwidthUm!) / 2)
+    nearby.sort((a, b) => Math.abs(a.wavelengthUm! - anchor.wavelengthUm!) - Math.abs(b.wavelengthUm! - anchor.wavelengthUm!))
+    for (const sample of nearby) {
+      if (visits.has(sample.visitId!)) continue
+      const sharesBand = [...visits.values()].every(previous => Math.abs(sample.wavelengthUm! - previous.wavelengthUm!)
+        <= Math.min(sample.bandwidthUm!, previous.bandwidthUm!) / 2)
+      if (sharesBand) visits.set(sample.visitId!, sample)
+    }
+    if (visits.size > best.length) best = [...visits.values()]
+  }
+  return best.sort((a, b) => Date.parse(a.startUtc!) - Date.parse(b.startUtc!))
+}
+
+function plotSpectrum(samples: SpectrumSample[], units: string, byDate = false) {
   const plot = node('canvas')
   plot.className = 'spectrum-plot'
   plot.width = 600
   plot.height = 340
   plot.setAttribute('role', 'img')
-  plot.setAttribute('aria-label', `Spectral flux in ${units} by wavelength. See the sample table for precise values and missing channels.`)
+  plot.setAttribute('aria-label', `Flux in ${units} by ${byDate ? 'UTC observation time' : 'wavelength'}. See the sample table for precise values.`)
   const context = plot.getContext('2d')!
-  const measured = samples.filter(sample => finite(sample.wavelengthUm) && finite(sample.flux))
-  const wavelengths = samples.map(sample => sample.wavelengthUm).filter(finite)
+  const position = (sample: SpectrumSample) => byDate ? Date.parse(sample.startUtc ?? '') : sample.wavelengthUm
+  const measured = samples.filter(sample => finite(position(sample)) && finite(sample.flux))
+  const positions = samples.map(position).filter(finite)
   const left = 80, right = 576, top = 26, bottom = 272
-  const minWave = Math.min(...wavelengths)
-  const waveSpan = Math.max(.02, Math.max(...wavelengths) - minWave)
+  const minimum = Math.min(...positions)
+  const span = Math.max(byDate ? 86400000 : .02, Math.max(...positions) - minimum)
   const fluxes = measured.flatMap(sample => [sample.flux! - (sample.error ?? 0), sample.flux! + (sample.error ?? 0)])
   const minFlux = Math.min(...fluxes)
   const fluxSpan = Math.max(1e-7, Math.max(...fluxes) - minFlux)
-  const x = (value: number) => left + 12 + (right - left - 24) * (value - minWave) / waveSpan
+  const x = (value: number) => left + 12 + (right - left - 24) * (value - minimum) / span
   const y = (value: number) => bottom - 12 - (bottom - top - 24) * (value - minFlux) / fluxSpan
   context.font = '20px system-ui'
   context.fillStyle = '#b9c7d9'
   context.fillText(units, left, top)
-  context.fillText('Wavelength (µm)', 230, 324)
+  context.fillText(byDate ? 'UTC observation date' : 'Wavelength (µm)', 218, 324)
   context.strokeStyle = '#50617a'
   context.beginPath()
   context.moveTo(left, top + 8)
   context.lineTo(left, bottom)
   context.lineTo(right, bottom)
   context.stroke()
-  for (const value of [minWave, minWave + waveSpan]) context.fillText(format(value), x(value) - 14, bottom + 26)
+  for (const value of [minimum, minimum + span]) {
+    const caption = byDate ? new Date(value).toISOString().slice(0, 10) : format(value)
+    context.fillText(caption, Math.min(x(value) - 14, right - context.measureText(caption).width), bottom + 26)
+  }
   for (const value of [minFlux, minFlux + fluxSpan]) context.fillText(format(value), 3, y(value) + 7)
   for (const sample of samples) {
-    if (!finite(sample.wavelengthUm)) continue
-    const column = x(sample.wavelengthUm)
+    const timeOrWave = position(sample)
+    if (!finite(timeOrWave)) continue
+    const column = x(timeOrWave)
     if (!finite(sample.flux)) {
       context.fillStyle = '#ebad86'
       context.fillRect(column - 1, bottom - 7, 3, 7)
