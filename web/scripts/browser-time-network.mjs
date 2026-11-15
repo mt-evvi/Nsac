@@ -131,10 +131,22 @@ try {
         sign: 'negative', pixel: {x: 14, y: 11}, raDeg: 46.01, decDeg: 0.02, snr: 7.4},
     ],
   })}))
-  await page.route('**/api/v1/series/paginated/spectra', route => route.fulfill({json: envelope({
-    mode: 'coadded_cube', units: 'MJy/sr', samples: [], warnings: [], archiveDoi: '10.26131/IRSA679',
-    referenceUrl: 'https://irsa.ipac.caltech.edu/data/SPHEREx/docs/overview_dr1.html',
-  })}))
+  const spectrumRequests = []
+  await page.route('**/api/v1/series/paginated/spectra', route => {
+    const request = route.request().postDataJSON()
+    spectrumRequests.push(request)
+    if (request.mode === 'coadded_cube') return route.fulfill({json: envelope({
+      mode: 'coadded_cube', units: 'MJy/sr', samples: [], warnings: [], archiveDoi: '10.26131/IRSA679',
+      referenceUrl: 'https://irsa.ipac.caltech.edu/data/SPHEREx/docs/overview_dr1.html',
+    })})
+    const missing = {wavelengthUm: 2.49, startUtc: frames[0].startUtc, sampleStatus: 'missing',
+      reason: 'Try an extended spectrum to load the detector calibration.'}
+    const samples = request.mode === 'quick' ? [missing] : [missing,
+      {wavelengthUm: 2.51, startUtc: frames[4].startUtc, sampleStatus: 'measured', flux: 900, error: 40},
+      {wavelengthUm: 2.62, startUtc: frames[4].startUtc, sampleStatus: 'measured', flux: 970, error: 60}]
+    return route.fulfill({json: {...envelope({mode: request.mode, units: 'µJy', samples, warnings: [],
+      referenceUrl: 'https://irsa.ipac.caltech.edu/onlinehelp/spherex/spherex/sp.html'}), status: 'partial'}})
+  })
   await page.route('**/api/v1/series/paginated/tracks', route => {
     const {marks} = route.request().postDataJSON()
     requestedTracks.push(marks)
@@ -158,7 +170,12 @@ try {
     else preparedCalls.push(id)
     const pass = route.request().url().includes('/pass-label/') && ['A', 'D'].includes(id)
       ? {surveyPass: 1} : {}
-    const variant = coadd ? {frameId: `${id}-coadd`, representation: 'coadd'} : {}
+    const variant = coadd ? {frameId: `${id}-coadd`, representation: 'coadd', contributors: [
+      {productId: 'coadd-source-A', archiveUrl: 'https://irsa.ipac.caltech.edu/ibe/data/coadd-source-A.fits',
+        startUtc: '2025-01-01T23:00:00Z', endUtc: '2025-01-01T23:01:00Z'},
+      {productId: 'coadd-source-B', archiveUrl: 'https://example.invalid/coadd-source-B.fits',
+        startUtc: '2025-01-01T23:02:00Z', endUtc: '2025-01-01T23:03:00Z'},
+    ]} : {}
     await route.fulfill({ json: envelope({...frame,...pass,...variant,imageUrl,coverageFraction:1,validFraction:1}) })
   })
   page.on('request', request => {
@@ -199,9 +216,11 @@ try {
   assert.equal(inputQueries.at(-1).decDeg, -0.5)
   assert.ok(await page.getByRole('button', {name:'Play observations'}).isDisabled())
   await ra.fill('44'); await search.click()
-  await page.getByText('No published observations cover this field', {exact:false}).waitFor()
+  await page.getByText('No published observations cover the requested field', {exact:false}).waitFor()
+  assert.ok(await page.locator('#image-empty').isHidden())
   await ra.fill('45'); await search.click()
-  await page.getByText('The test archive is temporarily unavailable.', {exact:true}).waitFor()
+  await page.getByText('The test archive is temporarily unavailable.', {exact:false}).waitFor()
+  assert.ok(await page.locator('#image-empty').isHidden())
   await page.goto(`${origin}/explore?ra=46&dec=0&fov=3&a=fixture-A&b=fixture-D&mode=side`)
   await page.locator('#caption-b').filter({hasText: '2025-03-12 12:00:00 UTC'}).waitFor()
   assert.deepEqual(indexedPages, ['page-2'])
@@ -232,6 +251,54 @@ try {
   await page.getByRole('checkbox', {name:'Include the two marks in the share link'}).check()
   const sharedMarks = () => JSON.parse(new URL(page.url()).searchParams.get('marks'))
   const original = sharedMarks().marks.find(mark => mark.frameId === 'A')
+  const frameA = page.locator('#frame-a')
+  const frameB = page.locator('#frame-b')
+  await frameA.scrollIntoViewIfNeeded()
+  const boxA = await frameA.boundingBox()
+  const boxB = await frameB.boundingBox()
+  const centerA = {x: boxA.x + boxA.width / 2, y: boxA.y + boxA.height / 2}
+  const centerB = {x: boxB.x + boxB.width / 2, y: boxB.y + boxB.height / 2}
+  const marker = async (pane, box) => page.locator(`#layers-${pane} .analysis-mark`).evaluate((node, {w, h}) => {
+    const base = Math.min(w, h)
+    return {x: (parseFloat(node.style.left) - w / 2) / base, y: (parseFloat(node.style.top) - h / 2) / base}
+  }, {w: box.width, h: box.height})
+  const a0 = await marker('a', boxA), b0 = await marker('b', boxB)
+  const sourceA = page.locator('#layers-a .analysis-mark')
+  const sourceBox = await sourceA.boundingBox()
+  await page.mouse.move(sourceBox.x + sourceBox.width / 2, sourceBox.y + sourceBox.height / 2)
+  await page.mouse.wheel(0, -260)
+  await page.waitForFunction(() => document.querySelector('#images').dataset.pannable === 'true', undefined, {timeout:3000})
+  const a1 = await marker('a', boxA), b1 = await marker('b', boxB)
+  assert.ok(Math.hypot(a1.x - a0.x, a1.y - a0.y) < .015, 'Wheel keeps the chosen sky position beneath the pointer')
+  assert.ok(Math.hypot(b1.x - b0.x, b1.y - b0.y) > .015, 'Wheel changes the linked second pane')
+  await page.mouse.move(centerB.x, centerB.y)
+  await page.mouse.down()
+  await page.mouse.move(centerB.x + 24, centerB.y + 14, {steps:3})
+  await page.mouse.up()
+  const a2 = await marker('a', boxA), b2 = await marker('b', boxB)
+  assert.ok(a2.x > a1.x && a2.y > a1.y, 'Dragging B pans A too')
+  assert.ok(Math.abs((a2.x - a1.x) - (b2.x - b1.x)) < .001)
+  assert.ok(Math.abs((a2.y - a1.y) - (b2.y - b1.y)) < .001)
+  assert.equal(sharedMarks().marks.find(mark => mark.frameId === 'A').pixel.x, original.pixel.x)
+  await frameA.focus()
+  await page.keyboard.press('0')
+  assert.deepEqual(await marker('a', boxA), a0)
+  assert.deepEqual(await marker('b', boxB), b0)
+  const cdp = await page.context().newCDPSession(page)
+  await cdp.send('Emulation.setTouchEmulationEnabled', {enabled:true,maxTouchPoints:2})
+  await cdp.send('Input.dispatchTouchEvent', {type:'touchStart',touchPoints:[
+    {id:1,x:centerA.x - 30,y:centerA.y}, {id:2,x:centerA.x + 30,y:centerA.y},
+  ]})
+  await cdp.send('Input.dispatchTouchEvent', {type:'touchMove',touchPoints:[
+    {id:1,x:centerA.x - 55,y:centerA.y}, {id:2,x:centerA.x + 55,y:centerA.y},
+  ]})
+  await cdp.send('Input.dispatchTouchEvent', {type:'touchEnd',touchPoints:[]})
+  await page.waitForFunction(() => document.querySelector('#images').dataset.pannable === 'true', undefined, {timeout:3000})
+  assert.ok(Math.abs((await marker('a', boxA)).x) > Math.abs(a0.x), 'Touch pinch magnifies the sky pixels')
+  await cdp.send('Emulation.setTouchEmulationEnabled', {enabled:false})
+  await cdp.detach()
+  await page.getByRole('button', {name:'Reset view'}).click()
+  assert.deepEqual(await marker('a', boxA), a0)
   await page.getByRole('button', {name:'Find sources'}).click()
   const residualTitle = 'Single-pair residuals · 2'
   await page.getByText(residualTitle, {exact:true}).click()
@@ -274,6 +341,14 @@ try {
   assert.deepEqual(measurement.covariancePx2, covariance)
   assert.equal(measurement.method, 'snapped native centroid')
   await page.getByText('Spectrum', {exact:true}).click()
+  await page.getByRole('button', {name:'Extract spectrum'}).click()
+  await page.getByText('0 of 1 samples measured', {exact:true}).waitFor()
+  await page.getByText('No brightness measurements', {exact:true}).waitFor()
+  await page.getByRole('button', {name:'Retry with extended extraction'}).click()
+  await page.getByText('2 of 3 samples measured', {exact:true}).waitFor()
+  assert.equal(await page.locator('.spectrum-chart .spectrum-point').count(), 2)
+  assert.equal(await page.locator('.spectrum-chart .spectrum-error-bar').count(), 2)
+  assert.deepEqual(spectrumRequests[1], {...spectrumRequests[0], mode:'extended'})
   await page.getByLabel('Spectrum source').selectOption('coadded_cube')
   await page.getByRole('button', {name:'Extract spectrum'}).click()
   const citation = page.getByRole('link', {name:'Spectral product DOI ↗'})
@@ -286,6 +361,12 @@ try {
   shared.searchParams.set('marks', JSON.stringify(selections))
   await page.goto(shared.href)
   await page.locator('#metadata').getByText('coadd', {exact: true}).waitFor()
+  const provenance = page.locator('#metadata')
+  await provenance.getByText('Contributing exposures (2)', {exact: true}).waitFor()
+  assert.equal(await provenance.getByRole('link', {name:'coadd-source-A'}).getAttribute('href'),
+    'https://irsa.ipac.caltech.edu/ibe/data/coadd-source-A.fits')
+  assert.equal(await provenance.getByRole('link', {name:'coadd-source-B'}).count(), 0)
+  await provenance.getByText('coadd-source-B · 2025-01-01 23:02:00 UTC to 2025-01-01 23:03:00 UTC', {exact: true}).waitFor()
   await page.locator('#layers-a .analysis-mark').waitFor({state:'attached'})
   await page.locator('#caption-b').filter({hasText: '2025-03-12 12:00:00 UTC'}).waitFor()
   assert.deepEqual(preparedCoadds, ['A'])
@@ -360,7 +441,7 @@ try {
   await page.waitForTimeout(150)
   assert.equal(budgetSpectrumRequests, 0, 'A fourth concurrent transfer waits for capacity')
   releaseAdjacent()
-  await page.getByText('Spectrum ready.', {exact:true}).waitFor()
+  await page.getByText('Extraction complete.', {exact:true}).waitFor()
   assert.equal(budgetSpectrumRequests, 1)
   releaseBudget()
   await page.locator('#caption-b').filter({hasText: '2025-02-13 12:00:00 UTC'}).waitFor()
@@ -387,7 +468,7 @@ try {
     assert.equal((await page.evaluate(() => window.rasterUse)).decoded, rasters.decoded)
   }
   await page.locator('#metadata').getByText('fixture-raster-11', {exact:true}).waitFor()
-  console.log('Timeline, comparisons, survey passes, analysis provenance, bounded raster cache, transfer deduplication, and PNG limits passed.')
+  console.log('Timeline, comparisons, synchronized drag and wheel/pinch zoom, survey passes, analysis provenance, bounded raster cache, and PNG limits passed.')
 } finally {
   await browser.close()
 }

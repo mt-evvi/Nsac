@@ -1,5 +1,5 @@
 import './style.css'
-import { installAnalysis } from './analysis.ts'
+import { installAnalysis, pixelToSky } from './analysis.ts'
 
 const staticOnly = import.meta.env.VITE_STATIC_PRESET_ONLY === '1'
 const appBase = staticOnly ? import.meta.env.BASE_URL : '/'
@@ -9,9 +9,10 @@ export type Frame = {
   visitId: string; surveyPass?: string | number; release: string; detector: number; archiveUrl: string
   imageUrl?: string; archiveDoi?: string; wavelengthUm?: number; bandwidthUm?: number; coverageFraction?: number; validFraction?: number
   flags?: string[]; warnings?: string[]; stretch?: number[]; representation?: string; coaddAnchor?: string
+  contributors?: {productId: string; archiveUrl: string; startUtc: string; endUtc: string}[]
 }
 export type Query = { raDeg: number; decDeg: number; fovArcmin: number; start?: string; end?: string; wavelengthUm?: number; detector?: number }
-export type Manifest = { seriesId: string; pipelineVersion?: string; query: Query; grid: {width: number; height: number; crpix: number[]; crval: number[]; cd: number[][]}; frames: Frame[]; count?: number; nextCursor?: string; counts: Record<string, number>; searchStatus: string }
+export type Manifest = { seriesId: string; pipelineVersion?: string; query: Query; grid: {width: number; height: number; crpix: number[]; crval: number[]; cd: number[][]}; frames: Frame[]; count?: number; nextCursor?: string; counts: Record<string, number>; searchStatus: string; complete?: boolean }
 export type Envelope<T> = { status: 'succeeded' | 'partial'; data: T; warnings: string[] }
 type Job<T> = Envelope<T> | { status: 'running' | 'queued'; jobId: string; stage: string; pollAfterMs: number } | { status: 'failed'; error: { code: string; message: string } }
 const el = <T extends HTMLElement>(id: string) => document.getElementById(id) as T
@@ -32,6 +33,10 @@ const canvasB = el<HTMLCanvasElement>('canvas-b')
 const slider = input('scrubber')
 let manifest: Manifest | undefined
 let preset: string | undefined
+let originalQuery: Query | undefined
+let originalPreset: string | undefined
+let originalSeries: string | undefined
+let originalIndex: Envelope<Manifest> | undefined
 let slots: Frame[][] = []
 let shown: Frame | undefined
 let paired: Frame | undefined
@@ -46,10 +51,13 @@ let playing = false
 let timekeeper = 0
 let debounce = 0
 let zoom = 1
-let pan = [0, 0]
+let pan = {x: 0, y: 0}
 let comparisonAsset: ImageBitmap | undefined
 let blinkB = false
 let blinkTimer = 0
+let browseRequest: AbortController | undefined
+let browseTimer = 0
+let browsing = false
 let lastWarnings: string[] = []
 const failures = new Map<string, string>()
 const prepared = new Map<string, Frame>()
@@ -171,10 +179,12 @@ function validate(query: Query) {
   if (query.wavelengthUm !== undefined && !(query.wavelengthUm >= .7 && query.wavelengthUm <= 5.1)) throw new Error('Choose a wavelength between 0.7 and 5.1 µm.')
   return query
 }
-function urlFor(query: Query, example?: string) {
+function urlFor(query: Query, example?: string, center?: {raDeg: number; decDeg: number}) {
   const params = new URLSearchParams({ ra: `${query.raDeg}`, dec: `${query.decDeg}`, fov: `${query.fovArcmin}` })
   for (const [key, value] of Object.entries({ preset: example, start: query.start, end: query.end, wave: query.wavelengthUm,
-    detector: query.detector, interval: select('interval').value,
+    detector: query.detector, viewRa: center?.raDeg, viewDec: center?.decDeg,
+    viewSeries: center ? manifest?.seriesId : undefined, targetSeries: center ? originalSeries : undefined,
+    interval: select('interval').value,
     a: shown?.coaddAnchor ?? shown?.productId, b: paired?.coaddAnchor ?? paired?.productId,
     aCoadd: shown?.representation === 'coadd' ? shown.frameId : undefined,
     bCoadd: paired?.representation === 'coadd' ? paired.frameId : undefined, mode: viewMode, marks: shareMarkParameter })) {
@@ -183,7 +193,11 @@ function urlFor(query: Query, example?: string) {
   return `${appBase}explore${staticOnly ? '/' : ''}?${params}`
 }
 function share() {
-  if (manifest) history.replaceState(null, '', urlFor(manifest.query, preset))
+  if (manifest) {
+    const origin = originalQuery ?? manifest.query
+    const shifted = manifest.query.raDeg !== origin.raDeg || manifest.query.decDeg !== origin.decDeg
+    history.replaceState(null, '', urlFor(origin, originalPreset ?? preset, shifted ? manifest.query : undefined))
+  }
 }
 function surveyPass(frame: Frame) {
   const value = String(frame.surveyPass ?? '').trim()
@@ -359,8 +373,274 @@ async function readImage(url: string, signal: AbortSignal, priority: 'auto' | 'l
 }
 function transform(canvas: HTMLCanvasElement) {
   const { width, height } = canvas.getBoundingClientRect()
-  const size = Math.min(width, height) * zoom
-  return { width, height, size, left: (width - size) / 2 + pan[0], top: (height - size) / 2 + pan[1] }
+  const base = Math.min(width, height)
+  const size = base * zoom
+  return { width, height, size, left: (width - size) / 2 + pan.x * base, top: (height - size) / 2 + pan.y * base }
+}
+function resetViewport() {
+  cancelBrowse()
+  zoom = 1
+  pan = {x: 0, y: 0}
+  redraw()
+  share()
+}
+function viewportPoint(canvas: HTMLCanvasElement, client: {x: number; y: number}) {
+  const bounds = canvas.getBoundingClientRect()
+  const base = Math.min(bounds.width, bounds.height)
+  return base ? {x: (client.x - bounds.left - bounds.width / 2) / base, y: (client.y - bounds.top - bounds.height / 2) / base}
+    : {x: 0, y: 0}
+}
+function updateViewport(nextZoom: number, from = {x: 0, y: 0}, to = from) {
+  const bounded = Math.max(1, Math.min(8, nextZoom))
+  const ratio = bounded / zoom
+  const next = {x: to.x - (from.x - pan.x) * ratio, y: to.y - (from.y - pan.y) * ratio}
+  const radius = Math.max(1, Math.hypot(next.x, next.y) / (bounded * 1.5))
+  const edge = (bounded - 1) / 2
+  pan = staticOnly ? {x: Math.max(-edge, Math.min(edge, next.x)), y: Math.max(-edge, Math.min(edge, next.y))}
+    : {x: next.x / radius, y: next.y / radius}
+  zoom = bounded
+  redraw()
+}
+function viewportCenter() {
+  if (!manifest) return
+  return pixelToSky(manifest.grid, {
+    x: (.5 - pan.x / zoom) * manifest.grid.width - .5,
+    y: (.5 + pan.y / zoom) * manifest.grid.height - .5,
+  })
+}
+function viewCoordinates() {
+  const output = document.getElementById('view-center')
+  const center = viewportCenter()
+  if (output) output.textContent = center
+    ? `View center · RA ${center.raDeg.toFixed(6)}° · Dec ${center.decDeg >= 0 ? '+' : ''}${center.decDeg.toFixed(6)}° (ICRS)`
+    : '—'
+  const restore = document.getElementById('return-target') as HTMLButtonElement | null
+  if (restore) {
+    restore.hidden = !center
+    restore.disabled = !center || !originalQuery ||
+      (Math.abs(center.raDeg - originalQuery.raDeg) < 1e-7 && Math.abs(center.decDeg - originalQuery.decDeg) < 1e-7 && zoom === 1)
+  }
+  const search = document.getElementById('search-view') as HTMLButtonElement | null
+  if (search) {
+    search.hidden = staticOnly || !center
+    search.disabled = !shown || browsing || el('images').classList.contains('marking')
+  }
+}
+function cancelBrowse() {
+  window.clearTimeout(browseTimer)
+  browseTimer = 0
+  browseRequest?.abort()
+  browseRequest = undefined
+  browsing = false
+  browseRetry = undefined
+  el('images').removeAttribute('aria-busy')
+  viewCoordinates()
+}
+function scheduleBrowse() {
+  window.clearTimeout(browseTimer)
+  if (staticOnly || !manifest || !shown || el('images').classList.contains('marking')) return
+  const halfVisible = .5 / zoom
+  const shift = Math.max(Math.abs(pan.x), Math.abs(pan.y)) / zoom
+  if (shift < .15 || shift + halfVisible <= .505) return
+  browseTimer = window.setTimeout(() => {
+    browseTimer = 0
+    const center = viewportCenter()
+    if (center) void browseField(center)
+  }, 600)
+}
+function fieldCandidate(next: Manifest, reference: Frame) {
+  const eligible = next.frames.filter(frame => frame.detector === reference.detector &&
+    frame.startUtc.slice(0, 10) === reference.startUtc.slice(0, 10))
+  return eligible.find(frame => frame.productId === (reference.coaddAnchor ?? reference.productId)) ??
+    eligible.find(frame => frame.obsId === reference.obsId) ??
+    eligible.sort((a, b) => Math.abs(Date.parse(a.startUtc) - Date.parse(reference.startUtc)) -
+      Math.abs(Date.parse(b.startUtc) - Date.parse(reference.startUtc)) || a.productId.localeCompare(b.productId))[0]
+}
+function unusableExposure(error: unknown) {
+  return error instanceof ServiceError &&
+    ['LOW_OVERLAP', 'BAD_FITS', 'INCOMPATIBLE_WAVELENGTH', 'PRODUCT_MISSING'].includes(error.code)
+}
+type BrowseOptions = { returning?: boolean; freshDiscovery?: boolean; replacement?: Query }
+let browseRetry: {center: {raDeg: number; decDeg: number}; options: BrowseOptions} | undefined
+async function browseField(center: {raDeg: number; decDeg: number}, options: BrowseOptions = {}) {
+  const {returning, freshDiscovery, replacement} = options
+  const current = manifest, a = shown, b = paired
+  if (staticOnly || !current || !a) return
+  cancelBrowse()
+  frameRequest.abort()
+  pairController.value.abort()
+  manifestPages?.abort()
+  setPlaying(false)
+  const controller = new AbortController()
+  browseRequest = controller
+  const signal = controller.signal
+  const epoch = queryId
+  const selectedMode = viewMode
+  const usePair = !replacement && Boolean(b && viewMode !== 'single')
+  const fromPreset = returning ? originalPreset : undefined
+  browsing = true
+  el('images').setAttribute('aria-busy', 'true')
+  viewCoordinates()
+  note(`${freshDiscovery || replacement ? 'Searching IRSA' : 'Loading nearby sky'} at ${center.raDeg.toFixed(6)}°, ${center.decDeg.toFixed(6)}°…`)
+  try {
+    let response: Envelope<Manifest>
+    if (replacement) {
+      response = await searchField(replacement, signal, false)
+    } else if (freshDiscovery) {
+      const {fovArcmin, start, end, detector, wavelengthUm} = current.query
+      response = await searchField({...center, fovArcmin, start, end, detector, wavelengthUm}, signal, false)
+    } else if (returning && originalIndex) response = originalIndex
+    else if (returning && originalSeries) response = await data<Manifest>(`/api/v1/series/${originalSeries}`, signal, undefined, false)
+    else if (fromPreset) response = await data<Manifest>(presetPath(fromPreset), signal, undefined, false)
+    else if (returning) throw new Error('The original field metadata is unavailable. Submit the entered coordinates to search again.')
+    else response = await data<Manifest>(`/api/v1/series/${current.seriesId}/recenter`, signal, center, false)
+    if (signal.aborted || manifest !== current || epoch !== queryId) return
+    const next = response.data
+    if (!next.frames.length) {
+      const reason = next.searchStatus === 'NO_COVERAGE' ? 'No published observations cover the requested field and dates.'
+        : next.searchStatus === 'NO_COMPARABLE_FRAMES' ? 'No exposures match the active filters in the requested field.'
+        : 'The incomplete archive reply has no usable observations for the requested field.'
+      throw new Error(reason)
+    }
+    const first = replacement ? undefined : fieldCandidate(next, a)
+    const second = usePair && b ? fieldCandidate(next, b) : undefined
+    const explicit = returning || freshDiscovery || Boolean(replacement)
+    if (!explicit && (!first || (usePair && !second))) {
+      throw new Error('The neighboring field has no indexed exposure for the selected UTC date and detector. The previous images are retained.')
+    }
+    const warnings = [...response.warnings]
+    const prepareNext = async (candidate: Frame, reference?: Frame) => {
+      const representation = reference?.representation === 'coadd' ? 'coadd' : 'exposure'
+      signal.throwIfAborted()
+      const frame = representation === 'exposure' && candidate.imageUrl ? candidate :
+        (await data<Frame>(`/api/v1/series/${next.seriesId}/frames/${candidate.frameId}`, signal, {representation}, false)).data
+      if (!frame.imageUrl) throw new Error('The neighboring exposure has no prepared image.')
+      if (frame.detector !== candidate.detector || frame.startUtc.slice(0, 10) !== candidate.startUtc.slice(0, 10)) {
+        throw new Error('The neighboring exposure has a different date or detector from the selection.')
+      }
+      return {
+        frame: representation === 'coadd' ? {...frame, coaddAnchor: candidate.productId} : frame,
+        image: await readImage(frame.imageUrl, signal),
+      }
+    }
+    const ordered = explicit ? [...next.frames].sort((left, right) => left.slotKey.localeCompare(right.slotKey)) : []
+    const allowedDates = new Set([...new Set(ordered.map(frame => frame.slotKey))].slice(0, 5))
+    const choices: {candidate: Frame; reference?: Frame}[] = []
+    if (first) {
+      choices.push({candidate: first, reference: a})
+      if (explicit && a.representation === 'coadd') choices.push({candidate: first})
+    }
+    for (const candidate of ordered) {
+      if (candidate !== first && allowedDates.has(candidate.slotKey)) choices.push({candidate})
+    }
+    let firstResult: Awaited<ReturnType<typeof prepareNext>> | undefined
+    let attempts = 0
+    let lastError: unknown
+    for (const {candidate, reference} of choices.slice(0, 6)) {
+      attempts++
+      try {
+        firstResult = await prepareNext(candidate, reference)
+        if (candidate === first && !reference) {
+          warnings.push('The selected coadd was unavailable. Showing its individual exposure.')
+        } else if (!replacement && candidate !== first) {
+          const sameDateAndDetector = candidate.slotKey === a.slotKey && candidate.detector === a.detector
+          warnings.push(sameDateAndDetector ? 'The selected exposure was unavailable. Showing another exposure on the selected date.'
+            : 'The selected date and detector were unavailable. Showing the earliest suitable observation.')
+        }
+        break
+      } catch (error) {
+        const rejectedCoadd = reference?.representation === 'coadd' &&
+          error instanceof ServiceError && error.code === 'NO_COMPARABLE_FRAMES'
+        if (!explicit || signal.aborted || (!unusableExposure(error) && !rejectedCoadd)) throw error
+        lastError = error
+      }
+    }
+    if (!firstResult) throw lastError ?? new Error('No suitable observation could be prepared for this field.')
+    const {frame: firstReady, image: firstImage} = firstResult
+    let secondResult: Awaited<ReturnType<typeof prepareNext>> | undefined
+    if (second && b && (!explicit || (second.frameId !== firstReady.frameId && attempts < 6))) {
+      try {
+        secondResult = await prepareNext(second, b)
+      } catch (error) {
+        if (!explicit || signal.aborted) throw error
+        warnings.push(statusMessage(error))
+      }
+    }
+    if (usePair && !secondResult) {
+      if (!explicit) throw new Error('The neighboring field cannot preserve both selected exposures.')
+      warnings.push('The selected comparison exposure was unavailable. Showing one observation.')
+    }
+    const secondReady = secondResult?.frame, secondImage = secondResult?.image
+    if (signal.aborted || manifest !== current || epoch !== queryId) return
+    for (const [before, after] of replacement ? [] : [[a, firstReady], [b, secondReady]]) {
+      if (before && after && before.startUtc !== after.startUtc && before.startUtc.slice(0, 10) === after.startUtc.slice(0, 10)) {
+        warnings.push(`The nearby field uses ${formatTime(after.startUtc)} on the selected date.`)
+      }
+    }
+    manifest = next
+    preset = fromPreset ?? bundledSlug(next.seriesId)
+    shown = firstReady
+    paired = secondReady
+    rendered = firstImage
+    renderedPair = secondImage
+    frameRequest = new AbortController()
+    comparisonAsset = undefined
+    shareMarkParameter = undefined
+    pinnedA = pinnedB = null
+    pinnedCoaddA = pinnedCoaddB = undefined
+    failures.clear()
+    prepared.clear()
+    for (const frame of [firstReady, secondReady]) if (frame) updatePrepared(frame)
+    for (const load of rasterLoads.values()) load.controller.abort()
+    for (const [key, image] of raster) {
+      if (image !== firstImage && image !== secondImage) { raster.delete(key); image.close() }
+    }
+    zoom = returning || replacement ? 1 : zoom
+    pan = {x: 0, y: 0}
+    retrySlot = undefined
+    browseRetry = undefined
+    lastWarnings = warnings
+    if (replacement) {
+      originalQuery = next.query
+      originalPreset = preset
+      originalIndex = response
+      originalSeries = next.seriesId
+      el('field-title').textContent = preset ? known.get(preset)!.name : 'Custom sky field'
+      const {raDeg, decDeg, fovArcmin} = next.query
+      el('field-position').textContent = `${raDeg.toFixed(5)}°, ${decDeg >= 0 ? '+' : ''}${decDeg.toFixed(5)}° · ${fovArcmin}′`
+      for (const link of el('presets').querySelectorAll('a')) link.setAttribute('aria-current', String(link.dataset.slug === preset))
+      history.pushState(null, '', urlFor(next.query, preset))
+    }
+    setMode(secondReady ? (['side', 'blink'].includes(selectedMode) ? selectedMode : 'side') : 'single')
+    details(firstReady)
+    updatePairChoices()
+    if (usePair && !secondReady) pairNote.textContent = 'The previous comparison exposure was unavailable in this field.'
+    timeline(Math.max(0, slotIndex(firstReady)), firstReady)
+    el('caption-b').textContent = secondReady ? formatTime(secondReady.startUtc) : ''
+    const title = `${formatTime(firstReady.startUtc)} · D${firstReady.detector}`
+    el('frame-a').setAttribute('aria-label', `SPHEREx observation ${title}`)
+    el('caption-a').textContent = title
+    moreButton.hidden = !next.nextCursor
+    share()
+    document.dispatchEvent(new Event('spherex-frame'))
+    document.dispatchEvent(new Event('spherex-pair'))
+    const comparisonNotice = !['single', 'side', 'blink'].includes(selectedMode) && secondReady
+      ? 'Both nearby observations are ready. Select a comparison mode to recompute this field.'
+      : replacement ? 'Observation ready.' : 'Nearby sky ready.'
+    note(warnings.join(' ') || comparisonNotice)
+  } catch (error) {
+    if (!signal.aborted && manifest === current && epoch === queryId) {
+      browseRetry = {center, options}
+      note(`${statusMessage(error)} The last loaded field is still available.`, 'error')
+    }
+  } finally {
+    if (browseRequest === controller) {
+      browseRequest = undefined
+      browsing = false
+      el('images').removeAttribute('aria-busy')
+      viewCoordinates()
+    }
+  }
 }
 function paint(canvas: HTMLCanvasElement, image?: ImageBitmap, adjustContrast = true) {
   const { width, height, size, left, top } = transform(canvas)
@@ -386,6 +666,9 @@ function paint(canvas: HTMLCanvasElement, image?: ImageBitmap, adjustContrast = 
   }
 }
 function redraw() {
+  if (el('images').classList.contains('marking') && (browseRequest || browseTimer)) cancelBrowse()
+  el('images').dataset.pannable = String(Boolean(rendered) && (!staticOnly || zoom > 1))
+  viewCoordinates()
   el('contrast-control').hidden = !rendered || Boolean(comparisonAsset)
   paint(canvasA, comparisonAsset ?? (viewMode === 'blink' && blinkB ? renderedPair : rendered), !comparisonAsset)
   if (viewMode === 'side') paint(canvasB, renderedPair)
@@ -410,6 +693,23 @@ function details(frame: Frame) {
   }
   if (frame.archiveDoi && /^10\.26131\/IRSA\d+$/.test(frame.archiveDoi)) {
     const citation = document.createElement('a'); citation.href = `https://doi.org/${frame.archiveDoi}`; citation.textContent = 'Release DOI ↗'; citation.className = 'doi'; item.append(citation)
+  }
+  if (frame.contributors?.length) {
+    const heading = document.createElement('p')
+    heading.textContent = `Contributing exposures (${frame.contributors.length})`
+    const sources = document.createElement('ul')
+    for (const contributor of frame.contributors) {
+      const entry = document.createElement('li')
+      if (contributor.archiveUrl.startsWith('https://irsa.ipac.caltech.edu/')) {
+        const source = document.createElement('a')
+        source.href = contributor.archiveUrl
+        source.textContent = contributor.productId
+        entry.append(source)
+      } else entry.append(contributor.productId)
+      entry.append(` · ${formatTime(contributor.startUtc)} to ${formatTime(contributor.endUtc)}`)
+      sources.append(entry)
+    }
+    item.append(heading, sources)
   }
   for (const warning of frame.warnings ?? []) { const p = document.createElement('p'); p.textContent = warning; item.append(p) }
 }
@@ -441,6 +741,39 @@ let manifestPages: AbortController | undefined
 let retrySlot: number | undefined
 const validModes = staticOnly ? ['single', 'blink', 'side'] : ['single', 'blink', 'side', 'difference', 'absolute_change', 'residual_score', 'sum']
 const presetPath = (slug: string) => `${appBase}presets/${slug}/manifest.json`
+
+function bundledSlug(seriesId: string) {
+  if (!seriesId.startsWith('preset-')) return
+  const slug = seriesId.slice('preset-'.length)
+  return known.has(slug) ? slug : undefined
+}
+
+async function searchField(query: Query, signal: AbortSignal, announce = true) {
+  try {
+    return await data<Manifest>('/api/v1/series', signal, query, announce)
+  } catch (error) {
+    if (signal.aborted || !(error instanceof ServiceError) ||
+      !['UPSTREAM_UNAVAILABLE', 'CIRCUIT_OPEN', 'ARCHIVE_TIMEOUT'].includes(error.code)) throw error
+    const example = [...known].find(([, field]) => field.fovArcmin === query.fovArcmin &&
+      Math.abs(field.raDeg - query.raDeg) < 1e-7 && Math.abs(field.decDeg - query.decDeg) < 1e-7)
+    if (!example) throw error
+    const [slug, field] = example
+    const saved = await data<Manifest>(presetPath(slug), signal, undefined, false).catch(() => undefined)
+    signal.throwIfAborted()
+    if (!saved || saved.data.seriesId !== `preset-${slug}` || !saved.data.frames.length) throw error
+    const preservesFilters = saved.data.frames.every(frame => frame.imageUrl &&
+      (!query.start || frame.slotKey >= query.start) && (!query.end || frame.slotKey <= query.end) &&
+      (!query.detector || frame.detector === query.detector) &&
+      (query.wavelengthUm === undefined || (frame.wavelengthUm != null && frame.bandwidthUm != null &&
+        Math.abs(frame.wavelengthUm - query.wavelengthUm) <= frame.bandwidthUm / 2)))
+    if (!preservesFilters) throw error
+    return {
+      status: 'partial' as const,
+      data: {...saved.data, query: {...saved.data.query, ...query}, complete: false, searchStatus: 'PARTIAL'},
+      warnings: [`IRSA search is unavailable. Showing the bundled ${field.name} observations for this field. Other dates may exist.`, ...saved.warnings],
+    }
+  }
+}
 const statusMessage = (error: unknown) => error instanceof Error ? error.message : 'The operation could not be completed.'
 
 function updatePrepared(frame: Frame) {
@@ -456,6 +789,7 @@ function updatePrepared(frame: Frame) {
 }
 
 async function showPrepared(frame: Frame, signal: AbortSignal = frameRequest.signal) {
+  cancelBrowse()
   if (!frame.imageUrl) throw new Error('This observation has no prepared image.')
   const image = await readImage(frame.imageUrl, signal)
   if (signal.aborted) return
@@ -478,6 +812,7 @@ async function showPrepared(frame: Frame, signal: AbortSignal = frameRequest.sig
 
 async function choose(index: number, options: { specific?: Frame; nextUsable?: boolean; coaddId?: string } = {}): Promise<boolean> {
   if (!manifest || index < 0 || index >= slots.length) return false
+  cancelBrowse()
   const generation = ++selectionId
   frameRequest.abort()
   pairController.value.abort()
@@ -505,7 +840,7 @@ async function choose(index: number, options: { specific?: Frame; nextUsable?: b
         retrySlot = undefined
         const next = slots[slotIndex(preparedFrame) + 1]?.[0]
         const neighbor = next && (prepared.get(next.frameId) ?? next)
-        if (neighbor?.imageUrl) void readImage(neighbor.imageUrl, signal, 'low').catch(() => {})
+        if (!browsing && neighbor?.imageUrl) void readImage(neighbor.imageUrl, signal, 'low').catch(() => {})
         return true
       } catch (error) {
         if (signal.aborted || generation !== selectionId) return false
@@ -515,7 +850,7 @@ async function choose(index: number, options: { specific?: Frame; nextUsable?: b
           retrySlot = index
           return false
         }
-        if (!(error instanceof ServiceError) || !['LOW_OVERLAP', 'BAD_FITS', 'INCOMPATIBLE_WAVELENGTH', 'PRODUCT_MISSING'].includes(error.code)) {
+        if (!unusableExposure(error)) {
           note(lastError, 'error')
           retrySlot = index
           return false
@@ -615,6 +950,7 @@ function pairLegend(result: { limits: number[]; units: string; warnings?: string
   legend.hidden = false
 }
 async function showPair(mode: string, other?: Frame, coaddId?: string) {
+  cancelBrowse()
   pairController.value.abort()
   pairController.value = new AbortController()
   const signal = pairController.value.signal
@@ -654,7 +990,44 @@ async function showPair(mode: string, other?: Frame, coaddId?: string) {
   }
 }
 
-async function loadIndex(query: Query, example: string | undefined, fromLink = false) {
+function matchesSavedView(next: Manifest, query: Query, center: {raDeg: number; decDeg: number}) {
+  const requested = {...query, ...center}
+  return ['raDeg', 'decDeg', 'fovArcmin', 'wavelengthUm'].every(key => {
+    const value = next.query[key as keyof Query], desired = requested[key as keyof Query]
+    return value === desired || (typeof value === 'number' && typeof desired === 'number' && Math.abs(value - desired) < 1e-6)
+  }) && next.query.detector === query.detector &&
+    (!query.start || next.query.start?.slice(0, 10) === query.start) &&
+    (!query.end || next.query.end?.slice(0, 10) === query.end)
+}
+async function savedIndex(query: Query, example: string | undefined, signal: AbortSignal,
+    center?: {raDeg: number; decDeg: number}, savedSeries?: string) {
+  let warning = ''
+  if (center && savedSeries) {
+    try {
+      const cached = await data<Manifest>(`/api/v1/series/${savedSeries}`, signal, undefined, false)
+      if (!matchesSavedView(cached.data, query, center)) throw new Error('The saved field has different coordinates or filters.')
+      return cached
+    } catch (error) {
+      signal.throwIfAborted()
+      warning = `The saved nearby view is unavailable. ${statusMessage(error)}`
+    }
+  }
+  const original = example ? await data<Manifest>(presetPath(example), signal) : await searchField(query, signal)
+  originalIndex = original
+  originalSeries = original.data.seriesId
+  if (!center) return original
+  try {
+    const next = await data<Manifest>(`/api/v1/series/${original.data.seriesId}/recenter`, signal, center, false)
+    return warning ? {...next, warnings: [warning, ...next.warnings]} : next
+  } catch (error) {
+    signal.throwIfAborted()
+    return {...original, warnings: [...original.warnings,
+      `The nearby view could not be restored. ${statusMessage(error)} Showing the original field.`]}
+  }
+}
+async function loadIndex(query: Query, example: string | undefined, fromLink = false,
+    initialCenter?: {raDeg: number; decDeg: number}, savedSeries?: string, targetSeries?: string) {
+  cancelBrowse()
   const active = ++queryId
   request.abort(); frameRequest.abort(); pairController.value.abort(); manifestPages?.abort()
   request = new AbortController()
@@ -669,8 +1042,12 @@ async function loadIndex(query: Query, example: string | undefined, fromLink = f
   }
   const restoredMode = fromLink ? viewMode : 'single'
   setMode('single')
-  zoom = 1; pan = [0, 0]; redraw()
+  resetViewport()
   preset = example
+  originalQuery = query
+  originalPreset = example
+  originalIndex = undefined
+  originalSeries = targetSeries
   for (const id of ['timeline-panel', 'pair-panel', 'image-tools', 'contrast-control', 'share']) el(id).hidden = true
   el('image-empty').hidden = false
   el('metadata').textContent = 'Select an observation to view its provenance.'
@@ -682,9 +1059,19 @@ async function loadIndex(query: Query, example: string | undefined, fromLink = f
   note(example ? 'Opening bundled example…' : 'Searching the NASA/IPAC archive…')
   for (const link of el('presets').querySelectorAll('a')) link.setAttribute('aria-current', String(link.dataset.slug === example))
   try {
-    const response = await data<Manifest>(example ? presetPath(example) : '/api/v1/series', signal, example ? undefined : query)
+    const response = await savedIndex(query, example, signal, initialCenter, savedSeries)
     if (signal.aborted || active !== queryId) return
     manifest = response.data
+    originalQuery = {...manifest.query, raDeg: query.raDeg, decDeg: query.decDeg, fovArcmin: query.fovArcmin}
+    if (!example && !initialCenter) {
+      const matched = bundledSlug(manifest.seriesId)
+      if (matched) {
+        preset = originalPreset = matched
+        el('field-title').textContent = known.get(matched)!.name
+        for (const link of el('presets').querySelectorAll('a')) link.setAttribute('aria-current', String(link.dataset.slug === matched))
+      }
+    }
+    if (initialCenter && !manifest.seriesId.startsWith('preset-')) preset = undefined
     lastWarnings = response.warnings
     if (!manifest.frames.length) {
       const empty = manifest.searchStatus === 'NO_COVERAGE' ? 'No published observations cover this field and selection.'
@@ -753,6 +1140,15 @@ function readLocation() {
     const coords = example ? known.get(example) : undefined
     if (example && !coords) throw new Error('This example field is unavailable.')
     if (staticOnly && !coords) throw new Error('Live lookup is unavailable in this static copy. Choose a bundled example.')
+    const hasCenter = params.has('viewRa') || params.has('viewDec')
+    if (hasCenter && (!params.has('viewRa') || !params.has('viewDec') || staticOnly)) {
+      throw new Error('A shared sky view needs valid center coordinates and the live viewer.')
+    }
+    const center = hasCenter ? {raDeg: coordinate(params.get('viewRa')!, true), decDeg: coordinate(params.get('viewDec')!, false)} : undefined
+    const savedSeries = params.get('viewSeries') ?? undefined
+    if (savedSeries && (!center || !/^[\w-]{1,80}$/.test(savedSeries))) throw new Error('The saved nearby view identifier is invalid.')
+    const targetSeries = params.get('targetSeries') ?? undefined
+    if (targetSeries && (!center || !/^[\w-]{1,80}$/.test(targetSeries))) throw new Error('The original field identifier is invalid.')
     const query = validate({ raDeg: coordinate(params.get('ra') ?? String(coords?.raDeg ?? ''), true),
       decDeg: coordinate(params.get('dec') ?? String(coords?.decDeg ?? ''), false), fovArcmin: Number(params.get('fov') ?? coords?.fovArcmin ?? 3),
       start: params.get('start') || undefined, end: params.get('end') || undefined,
@@ -771,7 +1167,7 @@ function readLocation() {
     pinnedCoaddA = coaddA || undefined
     pinnedCoaddB = coaddB || undefined
     shareMarkParameter = (params.get('marks') || '').slice(0, 1000) || undefined
-    void loadIndex(query, example, true)
+    void loadIndex(query, example, true, center, savedSeries, targetSeries)
   } catch (error) {
     el('query-error').textContent = statusMessage(error)
     el('query-error').hidden = false
@@ -780,7 +1176,10 @@ function readLocation() {
 
 const moreButton = createButton('More indexed exposures', () => { void loadMore() })
 moreButton.hidden = true
-const retryButton = createButton('Retry selected observation', () => { if (retrySlot !== undefined) void choose(retrySlot) })
+const retryButton = createButton('Retry selected observation', () => {
+  if (browseRetry) void browseField(browseRetry.center, browseRetry.options)
+  else if (retrySlot !== undefined) void choose(retrySlot)
+})
 retryButton.id = 'retry-observation'
 retryButton.hidden = true
 el('timeline-panel').append(moreButton, retryButton)
@@ -815,7 +1214,12 @@ el('query-form').addEventListener('submit', event => {
       fovArcmin: Number(select('fov').value), start: input('start').value || undefined, end: input('end').value || undefined,
       wavelengthUm: input('wavelength').value ? Number(input('wavelength').value) : undefined,
       detector: select('detector').value ? Number(select('detector').value) : undefined })
-    void loadIndex(query, undefined)
+    el('query-error').hidden = true
+    if (manifest && shown) {
+      void browseField(query, {replacement: query})
+    } else {
+      void loadIndex(query, undefined)
+    }
   } catch (error) { el('query-error').textContent = statusMessage(error); el('query-error').hidden = false }
 })
 select('interval').addEventListener('change', () => {
@@ -842,9 +1246,18 @@ slider.addEventListener('input', () => {
 })
 slider.addEventListener('change', () => { if (dragging) { dragging = false; window.clearTimeout(debounce); void choose(Number(slider.value)) } })
 slider.addEventListener('pointercancel', () => { dragging = false })
-button('zoom-in').addEventListener('click', () => { zoom = Math.min(8, zoom * 1.5); redraw() })
-button('zoom-out').addEventListener('click', () => { zoom = Math.max(1, zoom / 1.5); if (zoom === 1) pan = [0, 0]; redraw() })
-button('reset-view').addEventListener('click', () => { zoom = 1; pan = [0, 0]; redraw() })
+button('zoom-in').addEventListener('click', () => updateViewport(zoom * 1.5))
+button('zoom-out').addEventListener('click', () => updateViewport(zoom / 1.5))
+button('reset-view').addEventListener('click', resetViewport)
+document.getElementById('return-target')?.addEventListener('click', () => {
+  if (!originalQuery || !manifest) return
+  if (manifest.query.raDeg === originalQuery.raDeg && manifest.query.decDeg === originalQuery.decDeg) resetViewport()
+  else void browseField(originalQuery, {returning: true})
+})
+document.getElementById('search-view')?.addEventListener('click', () => {
+  const center = viewportCenter()
+  if (center) void browseField(center, {freshDiscovery: true})
+})
 button('reset-contrast').addEventListener('click', () => { input('contrast').value = '1'; redraw() })
 input('contrast').addEventListener('input', redraw)
 button('share').addEventListener('click', async () => {
@@ -852,21 +1265,75 @@ button('share').addEventListener('click', async () => {
   try { await navigator.clipboard.writeText(location.href); note('Share link copied.') }
   catch { note('Copy the address from your browser to share this view.') }
 })
-for (const id of ['frame-a', 'frame-b']) {
-  const pane = el(id)
-  let start: [number, number] | undefined
+for (const [pane, canvas] of [[el('frame-a'), canvasA], [el('frame-b'), canvasB]] as const) {
+  const pointers = new Map<number, {x: number; y: number}>()
+  const canNavigate = () => Boolean(rendered) && !el('images').classList.contains('marking')
+  const clientPoint = (event: MouseEvent) => ({x: event.clientX, y: event.clientY})
+  const pinch = () => {
+    const [a, b] = [...pointers.values()]
+    return {center: {x: (a.x + b.x) / 2, y: (a.y + b.y) / 2}, distance: Math.hypot(a.x - b.x, a.y - b.y)}
+  }
+  pane.addEventListener('wheel', event => {
+    if (!canNavigate() || !event.deltaY) return
+    event.preventDefault()
+    cancelBrowse()
+    const pixels = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? pane.clientHeight : 1)
+    const factor = Math.exp(-Math.max(-300, Math.min(300, pixels)) * .002)
+    updateViewport(zoom * factor, viewportPoint(canvas, clientPoint(event)))
+    scheduleBrowse()
+  }, {passive: false})
   pane.addEventListener('pointerdown', event => {
-    if (zoom === 1 || el('images').classList.contains('marking')) return
-    start = [event.clientX - pan[0], event.clientY - pan[1]]; pane.setPointerCapture(event.pointerId)
+    if (!canNavigate() || event.button !== 0 || pointers.size >= 2 || (staticOnly && zoom === 1 && event.pointerType !== 'touch')) return
+    cancelBrowse()
+    pointers.set(event.pointerId, clientPoint(event))
+    pane.setPointerCapture(event.pointerId)
+    pane.classList.add('dragging')
   })
   pane.addEventListener('pointermove', event => {
-    if (start) { pan = [event.clientX - start[0], event.clientY - start[1]]; redraw() }
+    const previous = pointers.get(event.pointerId)
+    if (!previous || !canNavigate()) return
+    const current = clientPoint(event)
+    if (pointers.size === 1) {
+      pointers.set(event.pointerId, current)
+      if (!staticOnly || zoom > 1) updateViewport(zoom, viewportPoint(canvas, previous), viewportPoint(canvas, current))
+      return
+    }
+    const before = pinch()
+    pointers.set(event.pointerId, current)
+    const after = pinch()
+    if (before.distance > 0) {
+      updateViewport(zoom * after.distance / before.distance, viewportPoint(canvas, before.center), viewportPoint(canvas, after.center))
+    }
   })
-  pane.addEventListener('lostpointercapture', () => { start = undefined })
+  const release = (event: PointerEvent) => {
+    if (!pointers.delete(event.pointerId)) return
+    if (!pointers.size) {
+      pane.classList.remove('dragging')
+      if (event.type === 'pointercancel') cancelBrowse()
+      else scheduleBrowse()
+    }
+  }
+  pane.addEventListener('pointerup', release)
+  pane.addEventListener('pointercancel', release)
+  pane.addEventListener('lostpointercapture', release)
+  pane.addEventListener('keydown', event => {
+    if (!canNavigate() || event.altKey || event.ctrlKey || event.metaKey) return
+    const movement: Record<string, {x: number; y: number}> = {
+      ArrowLeft: {x: .08, y: 0}, ArrowRight: {x: -.08, y: 0},
+      ArrowUp: {x: 0, y: .08}, ArrowDown: {x: 0, y: -.08},
+    }
+    if (event.key === '+' || event.key === '=') { cancelBrowse(); updateViewport(zoom * 1.5) }
+    else if (event.key === '-') { cancelBrowse(); updateViewport(zoom / 1.5) }
+    else if (event.key === '0') resetViewport()
+    else if ((!staticOnly || zoom > 1) && movement[event.key]) { cancelBrowse(); updateViewport(zoom, {x: 0, y: 0}, movement[event.key]) }
+    else return
+    event.preventDefault()
+    if (event.key !== '0') scheduleBrowse()
+  })
 }
 new ResizeObserver(redraw).observe(el('images'))
 window.addEventListener('popstate', readLocation)
-window.addEventListener('pagehide', () => { request.abort(); frameRequest.abort(); pairController.value.abort() })
+window.addEventListener('pagehide', () => { cancelBrowse(); request.abort(); frameRequest.abort(); pairController.value.abort() })
 
 function position(event: MouseEvent, canvas: HTMLCanvasElement) {
   if (!manifest) return
@@ -900,5 +1367,9 @@ if (staticOnly) {
   document.querySelector<HTMLAnchorElement>('.brand')!.href = appBase
   const explanation = el('title').nextElementSibling!
   explanation.textContent = 'Static copy · Play the bundled real examples and compare dates. Live lookup and scientific analysis require the server.'
+  const instructions = document.getElementById('image-instructions')
+  if (instructions) instructions.textContent = 'Scroll or pinch to zoom. Drag to pan within the loaded image. Use Reset view to return to its center.'
+  const browseNote = document.querySelector<HTMLElement>('.browse-note')
+  if (browseNote) browseNote.textContent = 'This static copy includes the bundled fields. Open the full app to explore nearby sky.'
 } else installAnalysis(analysisApi)
 readLocation()

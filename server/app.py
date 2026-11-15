@@ -15,7 +15,7 @@ from starlette.exceptions import HTTPException
 
 from .analysis_api import router as analysis_router
 from .config import MIB, SETTINGS
-from .contracts import ID, JOB_ID, FrameOptions, Problem, SeriesQuery, ready
+from .contracts import ID, JOB_ID, FrameOptions, Problem, RecenterQuery, SeriesQuery, ready
 from .jobs import Jobs
 from .release_index import schedule_if_due
 from .store import Store, content_key
@@ -241,7 +241,7 @@ def create_app(settings=SETTINGS):
         has_stale = row is not None and not no_coverage and age <= settings.stale_ttl
         try:
             response = service.schedule(request, series_id, "discovering archive observations", work, detached=has_stale,
-                                        transfer_kind="irsa")
+                                        transfer_kind="metadata")
         except Problem:
             if not has_stale:
                 raise
@@ -252,6 +252,51 @@ def create_app(settings=SETTINGS):
             warning = f"Showing cached archive metadata{origin} checked {checked}. Refresh for newly published observations."
             return service.page({**data, "status": "partial", "warnings": [*data["warnings"], warning]})
         return response
+
+    @app.post("/api/v1/series/{series_id}/recenter")
+    def recenter_series(series_id: ID, position: RecenterQuery, request: Request):
+        from astropy.coordinates import SkyCoord
+
+        from . import archive
+
+        service = request.app.state.service
+        source = service.manifest(series_id)["data"]
+        source_query = source["query"]
+        before = SkyCoord(source_query["raDeg"], source_query["decDeg"], unit="deg", frame="icrs")
+        after = SkyCoord(position.raDeg, position.decDeg, unit="deg", frame="icrs")
+        if before.separation(after).deg > 2 * source_query["fovArcmin"] / 60 + 1e-9:
+            raise Problem("RECENTER_LIMIT", "Move at most two field widths at once. Enter coordinates for a larger jump.")
+
+        query_fields = ("raDeg", "decDeg", "fovArcmin", "start", "end", "detector", "wavelengthUm")
+        query = SeriesQuery.model_validate({**{key: source_query[key] for key in query_fields if key in source_query},
+                                           "raDeg": position.raDeg, "decDeg": position.decDeg}).normalized()
+        identities = sorted((frame["productId"], frame["release"]) for frame in source["frames"])
+        target_id = content_key("recenter-v1", query, identities)
+        cached = service.store.get("series", target_id)
+        if cached is not None and cached[1] <= settings.stale_ttl:
+            return service.page(cached[0])
+
+        def work():
+            # Prepared pixels, masks, passbands, and detector coordinates belong to the old grid.
+            # Clone only exposure identities; the bounded cutout preparation verifies the new field.
+            exposure_fields = ("productId", "obsId", "release", "detector", "startUtc", "endUtc", "slotKey",
+                               "archiveUrl", "archiveDoi", "surveyPass", "surveyTarget", "detectorWavelengthRangeUm")
+            indexed = []
+            for frame in source["frames"]:
+                item = {key: frame[key] for key in exposure_fields if key in frame}
+                item["frameId"] = content_key(archive.PIPELINE_VERSION, item["productId"], item["release"],
+                                              query["raDeg"], query["decDeg"], query["fovArcmin"])
+                item["state"] = "candidate"
+                indexed.append(item)
+            warning = ("Using cached exposure metadata; the archive search has not been repeated. "
+                       "Coverage and wavelength at this position are checked when each image is prepared. "
+                       "Other exposures may exist outside this cached selection.")
+            manifest = archive.make_manifest({**query, "frame": "ICRS"}, indexed, complete=False)
+            envelope = ready({**manifest, "seriesId": target_id, "recenteredFrom": series_id}, [warning], partial=True)
+            service.store.put("series", target_id, envelope)
+            return service.page(envelope)
+
+        return service.schedule(request, target_id, "reusing cached exposure metadata", work)
 
     @app.get("/api/v1/series/{series_id}")
     def get_series(series_id: ID, request: Request, cursor: ID | None = None):

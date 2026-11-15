@@ -112,8 +112,7 @@ def test_upstream_admission_preserves_coalesced_and_local_work(tmp_path, monkeyp
     settings = Settings(cache=tmp_path, job_workers=1, irsa_daily_bytes=10, catalog_daily_bytes=2)
     transfers = upstream.RollingTransfers(settings)
     monkeypatch.setattr(upstream, "TRANSFERS", transfers)
-    monkeypatch.setattr(upstream, "CIRCUIT_UNTIL", 0.0)
-    monkeypatch.setattr(upstream, "HALF_OPEN", False)
+    monkeypatch.setattr(upstream, "CIRCUITS", {"discovery": upstream.Circuit(), "images": upstream.Circuit()})
     transfers.charge("catalog", 2)
     with pytest.raises(Problem) as rejected:
         upstream.check_admission("catalog")
@@ -127,11 +126,11 @@ def test_upstream_admission_preserves_coalesced_and_local_work(tmp_path, monkeyp
         return ready({})
 
     def admit():
-        upstream.check_admission("irsa")
+        upstream.check_admission("metadata")
 
     try:
         original = jobs.submit("shared", "ip1", "session1", "archive", work, admit=admit)
-        monkeypatch.setattr(upstream, "CIRCUIT_UNTIL", time.monotonic() + 30)
+        upstream.CIRCUITS["discovery"].until = time.monotonic() + 30
         same = jobs.submit("shared", "ip2", "session2", "archive", work, admit=admit)
         assert same["jobId"] == original["jobId"]
         with pytest.raises(Problem) as blocked:
@@ -150,8 +149,8 @@ def test_half_open_circuit_retains_status_if_local_transfer_budget_blocks_probe(
     transfers = upstream.RollingTransfers(Settings(cache=tmp_path, irsa_daily_bytes=2))
     transfers.charge("irsa", 2)
     monkeypatch.setattr(upstream, "TRANSFERS", transfers)
-    monkeypatch.setattr(upstream, "CIRCUIT_UNTIL", previous_until)
-    monkeypatch.setattr(upstream, "HALF_OPEN", False)
+    monkeypatch.setattr(upstream, "CIRCUITS", {"discovery": upstream.Circuit(until=previous_until),
+                                             "images": upstream.Circuit()})
     monkeypatch.setattr(upstream, "LAST_PROBE", availability)
 
     def wire_call(*args, **options):
@@ -162,14 +161,14 @@ def test_half_open_circuit_retains_status_if_local_transfer_budget_blocks_probe(
         upstream.fetch("https://irsa.ipac.caltech.edu/SIA?COLLECTION=spherex_dr1", limit=100,
                        deadline=time.monotonic() + 2, purpose="metadata")
     assert rejected.value.code == "DAILY_BUDGET"
-    assert upstream.LAST_PROBE is availability and upstream.CIRCUIT_UNTIL == previous_until and not upstream.HALF_OPEN
+    discovery = upstream.CIRCUITS["discovery"]
+    assert upstream.LAST_PROBE is availability and discovery.until == previous_until and not discovery.half_open
 
 
 def test_successful_cube_probe_preserves_degraded_discovery_status(monkeypatch):
-    monkeypatch.setattr(upstream, "CIRCUIT_UNTIL", 0.0)
+    monkeypatch.setattr(upstream, "CIRCUITS", {"discovery": upstream.Circuit(), "images": upstream.Circuit()})
     monkeypatch.setattr(upstream, "LAST_PROBE", None)
     monkeypatch.setattr(upstream, "LAST_DISCOVERY_PROBE", None)
-    monkeypatch.setattr(upstream, "FAILURES", [])
     upstream.record_probe(False, True, "metadata")
     upstream.record_probe(False, False, "cube")
     assert upstream.LAST_PROBE["purpose"] == "cube" and upstream.LAST_PROBE["status"] == "reachable"

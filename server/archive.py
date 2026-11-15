@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
+from threading import Lock
 from urllib.parse import urlencode, urlsplit
 
 import numpy as np
@@ -35,6 +36,22 @@ DETECTOR_NAME = re.compile(r"SPHEREx-D([1-6])\Z", re.IGNORECASE)
 
 class ArchiveError(Problem):
     pass
+
+
+class RowBudget:
+    def __init__(self):
+        self.remaining = MAX_ROWS
+        self.lock = Lock()
+
+    def reserve(self):
+        with self.lock:
+            count = min(ROW_LIMIT, self.remaining)
+            self.remaining -= count
+            return count
+
+    def release(self, count):
+        with self.lock:
+            self.remaining += count
 
 
 def query_dates(query):
@@ -84,16 +101,16 @@ def parse_votable(payload):
         raise ArchiveError("UPSTREAM_UNAVAILABLE", "IRSA returned an unreadable archive index.", 503, True) from exc
 
 
-def read_table(collection, query, start, end, budget, deadline):
-    parameters = {"COLLECTION": collection, "POS": region(query), "MAXREC": ROW_LIMIT,
+def read_table(collection, query, start, end, budget, deadline, max_records=ROW_LIMIT):
+    parameters = {"COLLECTION": collection, "POS": region(query), "MAXREC": max_records,
                   "TIME": f"{time_mjd(start):.8f} {time_mjd(end):.8f}"}
     if query.get("wavelengthUm"):
         parameters["BAND"] = f'{query["wavelengthUm"] * 1e-6:.9g}'
     url = f"https://{IRSA}/SIA?{urlencode(parameters)}"
     for attempt in range(2):
         try:
-            raw = fetch(url, limit=4 * MIB, deadline=deadline, purpose="metadata", budget=budget)
-            return parse_votable(raw)
+            table, overflow = fetch(url, limit=4 * MIB, deadline=deadline, purpose="metadata", budget=budget, decode=parse_votable)
+            return table, overflow or len(table) >= max_records
         except Problem as exc:
             wait = max(random.uniform(0.1, 0.3), exc.retry_after or 0)
             if attempt or exc.code not in {"UPSTREAM_UNAVAILABLE", "ARCHIVE_TIMEOUT"} or time.monotonic() + wait + 1 > deadline:
@@ -191,7 +208,7 @@ def index_table(table, query, release, doi):
         yield entry
 
 
-def collection_index(collection, release, doi, query, start, end, budget, deadline):
+def collection_index(collection, release, doi, query, start, end, budget, deadline, row_budget):
     windows = [(start, end + timedelta(days=1))]
     indexed = []
     warnings = []
@@ -200,27 +217,35 @@ def collection_index(collection, release, doi, query, start, end, budget, deadli
     rows = 0
     while windows:
         first, last = windows.pop(0)
+        reserved = row_budget.reserve()
+        if not reserved:
+            warnings.append(f"{release}: reached the combined archive row limit. Narrow the UTC dates for more complete coverage.")
+            complete = False
+            break
+        accepted = 0
         try:
-            table, overflows = read_table(collection, query, first, last, budget, deadline)
+            table, overflows = read_table(collection, query, first, last, budget, deadline, reserved)
+            accepted = min(len(table), reserved)
         except Problem as exc:
             warnings.append(f"{release}: {exc.message}")
             complete = False
             break
+        finally:
+            row_budget.release(reserved - accepted)
         successful = True
-        rows += len(table)
-        if rows > MAX_ROWS:
+        rows += accepted
+        if len(table) > reserved:
             complete = False
-            warnings.append(f"{release}: reached the maximum number of archive index rows.")
-            break
-        if overflows:
+            warnings.append(f"{release}: archive returned more rows than requested. The response was truncated.")
+        elif overflows:
             span = (last - first).days
-            if span > 1 and budget.attempts < budget.max_attempts - 2 and rows < MAX_ROWS - 2 * ROW_LIMIT:
+            if span > 1 and budget.attempts < budget.max_attempts - 2:
                 mid = first + timedelta(days=span // 2)
                 windows[:0] = [(first, mid), (mid, last)]
             else:
                 complete = False
                 warnings.append(f"{release}: archive index is truncated. Narrow the UTC dates for more complete coverage.")
-        indexed.extend(index_table(table, query, release, doi))
+        indexed.extend(index_table(table[:accepted], query, release, doi))
     return {"collection": collection, "release": release, "doi": doi, "complete": complete, "successful": successful,
             "warnings": list(dict.fromkeys(warnings)), "entries": indexed, "rows": rows}
 
@@ -283,17 +308,14 @@ def discover(query, *, budget=None, deadline=None):
         return make_manifest(query, [], warnings=["The date range does not overlap published mission dates."])
     budget = budget if budget is not None else TransferBudget(4 * MIB, 12)
     deadline = min(deadline, time.monotonic() + 20) if deadline is not None else time.monotonic() + 20
+    row_budget = RowBudget()
     with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = [executor.submit(collection_index, *item, query, start, end, budget, deadline) for item in COLLECTIONS]
+        futures = [executor.submit(collection_index, *item, query, start, end, budget, deadline, row_budget) for item in COLLECTIONS]
         results = [future.result() for future in futures]
     warnings = [warning for result in results for warning in result["warnings"]]
     if not any(result["successful"] for result in results):
-        raise ArchiveError("UPSTREAM_UNAVAILABLE", "IRSA could not index this field. Try again or open a bundled example.", 503, True, 10)
+        raise ArchiveError("UPSTREAM_UNAVAILABLE", "IRSA’s observation search did not return a usable result. Coverage here is unknown. Open a cached example or try again later.", 503, True, 10)
     entries = [entry for result in results for entry in result.pop("entries")
                if start.isoformat() <= entry["slotKey"] <= end.isoformat()]
     complete = all(result["complete"] for result in results)
-    if len(entries) > MAX_ROWS:
-        entries = sorted(entries, key=lambda entry: (entry["startUtc"], entry["productId"]))[:MAX_ROWS]
-        warnings.append("The combined archive index reached the row limit. Narrow the UTC date range.")
-        complete = False
     return make_manifest(query, entries, collections=results, complete=complete, warnings=warnings)

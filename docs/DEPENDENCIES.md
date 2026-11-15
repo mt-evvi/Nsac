@@ -16,3 +16,5 @@ The browser and Python lockfiles enumerate the shipped source dependencies and v
 | Requests, TypeScript, Playwright | Apache-2.0 |
 
 The demo captures the app and its real archive images. It includes English subtitles and labels Codex assistance. The project README records the mission acknowledgement. [Verification record](VERIFICATION.md)
+
+The viewer uses Inter and IBM Plex Mono from Google Fonts. Both use the SIL Open Font License. [Inter](https://fonts.google.com/specimen/Inter) · [IBM Plex Mono](https://fonts.google.com/specimen/IBM+Plex+Mono)

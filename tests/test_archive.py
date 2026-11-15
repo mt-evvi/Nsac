@@ -1,6 +1,9 @@
 """Deterministic IRSA discovery contracts independent of network availability."""
 
 from datetime import date
+from collections import Counter
+from threading import Barrier
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -53,3 +56,37 @@ def test_partial_and_complete_empty_are_distinct():
     assert archive.make_manifest(QUERY, [])['searchStatus'] == 'NO_COVERAGE'
     start, end = archive.query_dates(dict(QUERY, start='2020-01-01', end='2020-01-02'))
     assert start == date(2025, 4, 1) and end == date(2020, 1, 2)
+
+
+@pytest.mark.parametrize('ignored_maxrec', [False, True])
+def test_discovery_row_budget_is_shared_and_preserves_partial_frames(monkeypatch, ignored_maxrec):
+    first_responses = Barrier(2, timeout=3)
+    requests = {name: [] for name, _, _ in archive.COLLECTIONS}
+    accepted = Counter()
+
+    def fetch(url, *, budget, **_):
+        budget.attempt()
+        params = parse_qs(urlsplit(url).query)
+        collection, = params['COLLECTION']
+        size = int(params['MAXREC'][0])
+        requests[collection].append(size)
+        if len(requests[collection]) == 1:
+            first_responses.wait()
+        return range(size + int(ignored_maxrec)), True
+
+    def index_table(rows, query, release, doi):
+        accepted[release] += len(rows)
+        return [product(release, release, release, '2025-08-01')]
+
+    monkeypatch.setattr(archive, 'fetch', fetch)
+    monkeypatch.setattr(archive, 'index_table', index_table)
+    result = archive.discover(dict(QUERY, start='2025-04-01', end='2026-01-01'))
+    assert result['searchStatus'] == 'PARTIAL'
+    assert not result['complete']
+    assert {frame['release'] for frame in result['frames']} == {'DR1', 'QR3'}
+    assert all(0 < n <= 500 for sizes in requests.values() for n in sizes)
+    assert sum(len(sizes) for sizes in requests.values()) <= 12
+    assert sum(accepted.values()) == (1000 if ignored_maxrec else 4000)
+    assert sum(collection['rows'] for collection in result['collections']) == sum(accepted.values())
+    message = 'more rows than requested' if ignored_maxrec else 'combined archive row limit'
+    assert any(message in warning for warning in result['warnings'])

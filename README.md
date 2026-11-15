@@ -18,6 +18,10 @@ OPENBLAS_NUM_THREADS=1 .venv/bin/python -m uvicorn server.app:app --host 127.0.0
 
 Open `http://127.0.0.1:4173/`. Use `SPHEREX_CACHE` to select a writable cache directory. The public deployment uses one Uvicorn process under systemd behind Caddy.
 
+Drag the image to explore nearby sky and scroll or pinch to zoom. The current view center appears below the image; the coordinates you entered stay in the search form. Nearby views reuse the known exposures and load the selected observation after movement stops. They do not run another archive search or download an entire detector. If the archive or exposure has no usable cutout, the previous image remains available. **Search archive here** explicitly looks for other exposures at the view center while preserving your entered target. [Navigation behavior and live checks](docs/SKY_NAVIGATION.md)
+
+The server keeps a bounded 4 GiB cache of derived products and evicts older entries. Archive requests, download sizes, concurrent jobs and daily transfers have separate limits. The browser discards images from the previous field after a successful move. [Resource limits](docs/PRODUCTION_AND_BUDGETS.md)
+
 ## Verify
 
 ```sh

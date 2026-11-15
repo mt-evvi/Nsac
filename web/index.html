@@ -17,7 +17,7 @@
         <div class="query-intro">
           <p class="eyebrow">NASA SPHEREx observations</p>
           <h1 id="title">Explore the sky over time</h1>
-          <p>Enter right ascension and declination in degrees or sexagesimal, or open an example.</p>
+          <p>Pick an example to play real infrared observations. To find another field, enter its sky coordinates. Right ascension is like longitude, and declination is like latitude.</p>
         </div>
         <form id="query-form" novalidate>
           <div class="coordinates">
@@ -37,18 +37,35 @@
         <nav id="presets" class="presets" aria-label="Example fields"><span>Example fields</span></nav>
       </section>
       <section class="workspace" aria-labelledby="field-title">
-        <div class="workspace-heading"><div><p class="eyebrow">Observation viewer</p><h2 id="field-title">Sky field</h2></div><span id="field-position" class="field-position"></span></div>
+        <div class="workspace-heading"><h2 id="field-title">Sky field</h2><span id="field-position" class="field-position"></span></div>
         <p id="status" class="status" role="status">Choose an example or enter coordinates to load observations.</p>
         <div class="workbench">
           <section class="viewer" aria-label="Observation and timeline">
             <div id="images" class="images">
-              <div id="frame-a" class="frame" tabindex="0" aria-label="Sky image"><canvas id="canvas-a"></canvas><div id="layers-a" class="layers"></div><span id="caption-a" class="caption" hidden></span></div>
-              <div id="frame-b" class="frame" tabindex="0" aria-label="Comparison sky image" hidden><canvas id="canvas-b"></canvas><div id="layers-b" class="layers"></div><span id="caption-b" class="caption" hidden></span></div>
+              <div id="frame-a" class="frame" tabindex="0" aria-label="Sky image" aria-describedby="image-instructions"><canvas id="canvas-a"></canvas><div id="layers-a" class="layers"></div><span id="caption-a" class="caption" hidden></span></div>
+              <div id="frame-b" class="frame" tabindex="0" aria-label="Comparison sky image" aria-describedby="image-instructions" hidden><canvas id="canvas-b"></canvas><div id="layers-b" class="layers"></div><span id="caption-b" class="caption" hidden></span></div>
               <div id="image-empty" class="empty-image"><span aria-hidden="true">✧</span><p>No observation selected</p></div>
               <div class="orientation" aria-hidden="true">↑ N<br>← E</div>
               <div id="image-tools" class="image-tools" hidden><button id="zoom-out" type="button" aria-label="Zoom out">−</button><button id="zoom-in" type="button" aria-label="Zoom in">+</button><button id="reset-view" type="button">Reset view</button></div>
             </div>
             <div id="heatmap-legend" class="heatmap-legend" hidden></div>
+            <div class="viewer-guide">
+              <p id="image-instructions"><strong>Explore the sky</strong><span>Drag to move; scroll or pinch to zoom. Nearby observations load after you stop moving, when the archive is available.</span></p>
+              <div class="view-location"><output id="view-center" aria-live="off"></output><button id="return-target" type="button" class="quiet" hidden>Return to entered position</button><button id="search-view" type="button" class="quiet" aria-describedby="browse-help" title="Look for other exposures at the view center. This contacts IRSA and can be unavailable." hidden>Search archive here</button></div>
+              <p id="browse-help" class="browse-note">Nearby views request small cutouts from the loaded exposure list. Use Search archive here to look for other exposures. If IRSA is unavailable, <a href="#presets">open a cached example</a>.</p>
+              <div class="image-key">
+                <span class="intensity-guide"><span aria-hidden="true" class="intensity-ramp"></span> Fainter to brighter</span>
+                <details class="mask-guide">
+                  <summary><span class="mask-swatch" aria-hidden="true"></span> Reading the image</summary>
+                  <dl>
+                    <div><dt>Hatched pixels</dt><dd>No usable measurement in this image. The exposure may miss this spot, or a quality check may exclude it, for example near a saturated star.</dd></div>
+                    <div><dt>Dark pixels inside the image</dt><dd>In an observation view, these show measured low brightness.</dd></div>
+                    <div><dt>Blank space outside the image</dt><dd>Sky beyond the loaded cutout. Browse farther to request nearby data when available.</dd></div>
+                  </dl>
+                  <p>Use the measured parts of the image. Try another observation date for coverage at a masked spot.</p>
+                </details>
+              </div>
+            </div>
             <div class="timeline" id="timeline-panel" hidden>
               <div class="timeline-top"><p class="eyebrow">Observation timeline</p><output id="date-label" for="scrubber"></output></div>
               <div class="calendar" id="calendar" role="img" aria-label="Observation dates on an elapsed-time scale"></div>
@@ -59,7 +76,7 @@
                 <button id="play" class="primary" type="button" aria-label="Play observations">▶ Play</button>
                 <button id="next" type="button" aria-label="Next observation">›</button>
                 <label>Speed <select id="speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option></select></label>
-                <label>Interval <select id="interval"><option value="dates">Observation dates</option><option value="week">7 days</option><option value="month">30 days</option><option value="passes">Survey passes</option></select></label>
+                <label>Group by <select id="interval" title="Group observations for easier browsing. The displayed image still has its actual observation date."><option value="dates">Observation dates</option><option value="week">7 days</option><option value="month">30 days</option><option value="passes">Survey passes</option></select></label>
                 <label id="pointing-label" hidden>Exposure <select id="pointing"></select></label>
               </div>
               <p id="timeline-note" class="annotation"></p>
@@ -67,15 +84,21 @@
           </section>
           <aside class="inspector" id="inspector" aria-label="Field tools">
             <details open><summary>Frame details</summary><div class="detail-body" id="metadata"><p>Select an observation to view its provenance.</p></div><div class="detail-body contrast" id="contrast-control" hidden><label for="contrast">Contrast</label><input id="contrast" type="range" min="0.5" max="2.5" value="1" step="0.05"><button id="reset-contrast" type="button" class="quiet">Reset</button></div></details>
-            <details id="pair-panel" hidden><summary>Compare dates</summary><div class="detail-body tools" id="pair-controls"></div></details>
-            <details id="track-panel" hidden><summary>Sources and motion</summary><div class="detail-body tools" id="track-controls"></div></details>
-            <details id="catalog-panel" hidden><summary>Catalog overlays</summary><div class="detail-body tools" id="catalog-controls"></div></details>
-            <details id="spectrum-panel" hidden><summary>Spectrum</summary><div class="detail-body tools" id="spectrum-controls"></div></details>
+            <details id="pair-panel" hidden><summary>Compare dates</summary><p class="tool-intro">Pick a second date. Use side by side or blink to inspect the images, or try Difference to see what got brighter or fainter.</p><div class="detail-body tools" id="pair-controls"></div></details>
+            <details id="track-panel" hidden><summary>Sources and motion</summary><p class="tool-intro">Mark the same object in two images to measure how far it moved. Open a side-by-side comparison to see where you’re marking.</p><div class="detail-body tools" id="track-controls"></div></details>
+            <details id="catalog-panel" hidden><summary>Catalog overlays</summary><p class="tool-intro">Add markers from other sky surveys to help identify objects in the image.</p><div class="detail-body tools" id="catalog-controls"></div></details>
+            <details id="spectrum-panel" hidden><summary>Spectrum</summary><p class="tool-intro">See how infrared brightness changes with wavelength. Choose the field center or pick a point on the image.</p><div class="detail-body tools" id="spectrum-controls"></div></details>
           </aside>
         </div>
       </section>
     </main>
-    <footer><span>SPHEREx data from NASA/IPAC IRSA</span><a href="https://irsa.ipac.caltech.edu/spherex-archive-documentation/">Archive documentation ↗</a></footer>
+    <footer>
+      <div class="team-credit">
+        <div><p class="eyebrow">NASA Space Apps Challenge 2026</p><h2>Built by Ze Deutsche</h2><p>Exploring the changing infrared sky, one observation at a time.</p></div>
+        <a class="team-link" href="https://www.spaceappschallenge.org/2026/find-a-team/ze-deutsche/?tab=members">Meet our team ↗</a>
+      </div>
+      <div class="footer-data"><span>SPHEREx data from NASA/IPAC IRSA</span><a href="https://irsa.ipac.caltech.edu/spherex-archive-documentation/">Archive documentation ↗</a></div>
+    </footer>
     <script type="module" src="/src/core.ts"></script>
   </body>
 </html>
