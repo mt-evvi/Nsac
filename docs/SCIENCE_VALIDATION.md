@@ -23,6 +23,10 @@ A separate live check widened the literal NASA WISE pair to 8′. Each image was
 
 The real comparisons verify archive handling and conservative rejection. Quantitative real-field astrometry, real-source classification, and a measured forecast remain unverified. The exact FITS observation identities and target limitations are recorded in the matrix. [Target verification matrix](TARGET_TEST_MATRIX.md)
 
+## Non-preset quiet field
+
+An 8′ query at RA 150.7817877°, Dec +3.3502204° used the public IRSA SPHEREx tutorial position near COSMOS. The April 2025–November 2026 DR1 and QR3 metadata queries returned `UPSTREAM_UNAVAILABLE`. A narrowed April–December 2025 DR1 retry made two bounded attempts and returned no response bytes and zero indexed rows. IRSA reported that the upstream service did not return the requested data. No FITS cutout request was issued. Registration, Gaia-stationary references, residual noise, and the false-positive rate remain unmeasured for this field. [IRSA tutorial position](https://caltech-ipac.github.io/irsa-tutorials/spherex-source-discovery-tool-demo/)
+
 ## Injected source classification and independent holdout
 
 Each reported run used three 64 × 64 simulated visits separated by 12 days, seeded Gaussian sky noise of 0.25 MJy/sr per pixel, five stable references, a moving source (1.15 pixels per visit), a fixed variable, and one single-pixel cosmic-ray injection per visit. The table scales the mover's amplitude and the variable's light curve together. Nominal peak S/N is the injected peak amplitude of the mover divided by the input pixel noise. A true positive requires the correct label and first-epoch position within 0.8 pixel. A wrong label counts as a false positive for this metric.

@@ -11,7 +11,7 @@ GIB = 1024 * MIB
 
 
 class Settings(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", validate_default=True)
 
     cache: Path = Path(os.environ.get("SPHEREX_CACHE", Path.home() / ".cache" / "spherex"))
     web: Path = Path(os.environ.get("SPHEREX_WEB", ROOT / "web" / "dist"))
@@ -31,7 +31,7 @@ class Settings(BaseModel):
     empty_ttl: int = 600
     catalog_ttl: int = 24 * 3600
     derived_limit: int = 4 * GIB
-    disk_reserve: int = Field(default=20 * GIB, ge=0)
+    disk_reserve: int = Field(default=int(os.environ.get("SPHEREX_DISK_RESERVE_BYTES", 20 * GIB)), ge=0)
     irsa_daily_bytes: int = 8 * GIB
     catalog_daily_bytes: int = 128 * MIB
 

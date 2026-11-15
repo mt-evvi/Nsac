@@ -45,7 +45,10 @@ try {
   await page.getByRole('combobox', {name: 'Second observation date'}).selectOption({index: 1})
   await page.locator('#frame-b').waitFor({state: 'visible'})
   await page.getByRole('combobox', {name: 'Comparison view'}).selectOption('difference')
-  await page.locator('#heatmap-legend').waitFor({state: 'visible'})
+  await page.locator('#heatmap-legend').waitFor({state: 'visible'}).catch(async error => {
+    const label = await page.locator('#status').innerText()
+    throw new Error(`Comparison never rendered. Viewer status: ${label}`, {cause: error})
+  })
   const legend = await page.locator('#heatmap-legend').innerText()
   assert.match(legend, /lower in B/)
   assert.match(legend, /higher in B/)

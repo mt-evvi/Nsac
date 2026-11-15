@@ -32,10 +32,14 @@ jobs:
         working-directory: web
       - name: Exercise production shell with Chromium
         run: |
-          SPHEREX_CACHE="$RUNNER_TEMP/spherex-cache" python -m uvicorn server.app:app --host 127.0.0.1 --port 4173 > "$RUNNER_TEMP/spherex.log" 2>&1 &
+          df -h .
+          SPHEREX_CACHE="$RUNNER_TEMP/spherex-cache" SPHEREX_DISK_RESERVE_BYTES=0 python -m uvicorn server.app:app --host 127.0.0.1 --port 4173 > "$RUNNER_TEMP/spherex.log" 2>&1 &
           trap 'kill "$!"' EXIT
           curl --fail --retry 7 --retry-connrefused --retry-delay 1 http://127.0.0.1:4173/readyz
-          node web/scripts/browser-smoke.mjs
+          if ! node web/scripts/browser-smoke.mjs; then
+            cat "$RUNNER_TEMP/spherex.log"
+            exit 1
+          fi
       - name: Package build and provenance
         run: |
           printf 'SPHEREX_RELEASE=%s\n' "$GITHUB_SHA" > release.env
