@@ -19,7 +19,7 @@ from server.upstream import TransferBudget
 START = "2025-04-01"
 END = "2026-11-14"
 YEAR = "J2026.0"
-SIMBAD = "https://simbad.cds.unistra.fr/simbad/sim-id?Ident="
+SIMBAD = "https://simbad.u-strasbg.fr/simbad/sim-id?Ident="
 CATALOG = {
     "barnard": ("Barnard’s Star", "HIP 87937", SIMBAD + "HIP+87937", YEAR, 269.45, 4.768, 3, 6, 4.9282),
     "epsilon-indi-b": ("Epsilon Indi B", "2MASS J22041052−5646577",
@@ -43,6 +43,26 @@ SNAPSHOT = {
     "rw-aurigae": "RW-Aurigae-spherex_dr1.xml RW-Aurigae-spherex_qr3.xml",
     "r-draconis": "rd-dr1.xml retry-248.1676075-qr3.xml",
 }
+ASTROMETRY = {
+    "barnard": {"referenceRaDeg": 269.452076959, "referenceDecDeg": 4.693364967, "referenceEpoch": "J2000.0",
+                 "pmRaCosDecMasYr": -801.551, "pmDecMasYr": 10362.394},
+    "epsilon-indi-b": {"referenceRaDeg": 331.043833333, "referenceDecDeg": -56.782694444,
+                       "referenceEpoch": "1999.855", "pmRaCosDecMasYr": 3976, "pmDecMasYr": -2500},
+    "wise-0855": {"referenceRaDeg": 133.795224, "referenceDecDeg": -7.245138, "referenceEpoch": "MJD 55320.4",
+                  "pmRaCosDecMasYr": -8188, "pmDecMasYr": 680,
+                  "positionSource": "https://arxiv.org/abs/1404.6501"},
+    "wise-0855-nasa": {"referenceRaDeg": 133.79512917, "referenceDecDeg": -7.24514722,
+                       "referenceEpoch": "Historical WISE position quoted by the challenge"},
+    "rw-aurigae": {"referenceRaDeg": 76.95654167, "referenceDecDeg": 30.40144444, "referenceEpoch": "J2000"},
+    "r-draconis": {"referenceRaDeg": 248.1676075, "referenceDecDeg": 66.754984167, "referenceEpoch": "J2000"},
+}
+
+
+def catalog_reference(slug):
+    _, identifier, source, epoch, _, _, _, _, _ = CATALOG[slug]
+    return {"id": identifier, "source": source, "epoch": epoch, **ASTROMETRY[slug]}
+
+
 NOTES = {
     "barnard": "Observation-era field from the archive audit. The bright core may saturate. Motion requires a verified relative registration and target centroid.",
     "epsilon-indi-b": "Centers the brown-dwarf pair separately from Epsilon Indi A using the observation-era audit position. The two companions fall below the native pixel scale.",
@@ -149,7 +169,7 @@ def shortlist(candidates, target, width, required=(), near_target=False):
 
 
 def bundle(slug, args, run_budget):
-    title, identifier, source, epoch, ra, dec, fov, detector, wish = CATALOG[slug]
+    title, _, _, _, ra, dec, fov, detector, wish = CATALOG[slug]
     query = {"raDeg": ra, "decDeg": dec, "fovArcmin": fov, "start": START, "end": END}
     archive_data = archive_manifest(slug, query, args.snapshot_dir, args.barnard_dr1)
     spectral = args.calibration_dir / f"spectral_wcs_D{detector}_spx_cal-swcs-v5-2026-191.fits"
@@ -236,7 +256,7 @@ def bundle(slug, args, run_budget):
     manifest = {**archive_data, "seriesId": "preset-" + slug, "frames": included, "title": title,
                 "counts": {**archive_data["counts"], "preparedFrames": len(included)},
                 "baselineDays": baseline.total_seconds() / 86400, "warnings": notes,
-                "catalogReference": {"id": identifier, "source": source, "epoch": epoch},
+                "catalogReference": catalog_reference(slug),
                 "presetSlug": slug, "referenceStretch": stretch, "fixtureSelection": "Independent matched cutouts",
                 "sourceReleases": sorted(sources), "downloadBytes": budget.bytes, "generationSeconds": round(time.monotonic() - started, 2)}
     body = json.dumps(ready(manifest, warnings=notes), indent=2, allow_nan=False).encode() + b"\n"

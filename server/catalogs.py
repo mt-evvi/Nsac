@@ -43,9 +43,11 @@ def _query(catalog, grid):
         return f"https://{IRSA}/cgi-bin/Gator/nph-query?" + urlencode(parameters), radius
     point = f"POINT('ICRS',{ra:.8f},{dec:.8f})"
     adql = (
-        f"SELECT TOP {ROW_LIMIT + 1} {fields},DISTANCE(POINT('ICRS',ra,dec),{point}) AS separation FROM gaiadr3.gaia_source "
+        f"SELECT TOP {ROW_LIMIT + 1} {fields},"
+        f"DISTANCE(POINT('ICRS',ra,dec),{point}) + 0.0015 * phot_g_mean_mag AS priority "
+        "FROM gaiadr3.gaia_source "
         f"WHERE 1=CONTAINS(POINT('ICRS',ra,dec),CIRCLE('ICRS',{ra:.8f},{dec:.8f},{radius:.8f})) "
-        "ORDER BY separation,source_id"
+        "ORDER BY priority,source_id"
     )
     path = f"https://{GAIA}/tap-server/tap/sync"
     return path + "?" + urlencode({"REQUEST": "doQuery", "LANG": "ADQL", "QUERY": adql, "FORMAT": "votable"}), radius
@@ -116,6 +118,7 @@ def _parse(payload, catalog, radius):
         "catalog": catalog, "rows": rows, "coneRadiusDeg": radius, "rowLimit": ROW_LIMIT,
         "truncated": len(table) > ROW_LIMIT or "OVERFLOW" in states,
         "sourceUrl": GAIA_URL if gaia else WISE_URL,
+        "selectionMethod": "Gaia cone ordered by separation with a brightness preference." if gaia else "AllWISE cone search.",
     }
 
 
@@ -163,7 +166,7 @@ def project_catalog(rows, grid, frame_metadata=None):
             })
     return {
         "catalog": rows["catalog"], "markers": markers, "referenceRows": rows["rows"],
-        "truncated": rows["truncated"],
+        "truncated": rows["truncated"], "selectionMethod": rows.get("selectionMethod"),
         "rowLimit": rows["rowLimit"], "coneRadiusDeg": rows["coneRadiusDeg"], "sourceUrl": rows["sourceUrl"],
         "displayEpoch": when.isoformat().replace("+00:00", "Z") if when else (
             "Gaia reference epoch (J2016.0)" if gaia else "Historical AllWISE observations (2010–2011)"

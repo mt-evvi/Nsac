@@ -189,7 +189,7 @@ def create_app(settings=SETTINGS):
         row = service.store.get("series", series_id)
         if row is not None:
             data, age = row
-            no_coverage = data["data"].get("searchStatus") == "NO_COVERAGE"
+            no_coverage = data["data"].get("searchStatus") in {"NO_COVERAGE", "NO_COMPARABLE_FRAMES"}
             ttl = settings.empty_ttl if no_coverage or data["status"] == "partial" else settings.metadata_ttl
             if age < ttl:
                 return service.page(data)

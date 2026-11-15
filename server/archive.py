@@ -7,6 +7,8 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
+from functools import lru_cache
+from pathlib import Path
 from urllib.parse import urlencode, urlsplit
 
 import numpy as np
@@ -14,6 +16,7 @@ from astropy.coordinates import SkyCoord
 from astropy.io.votable import parse
 from astropy.time import Time
 from astropy.wcs import WCS
+from scipy.ndimage import map_coordinates
 
 from . import imaging
 from .config import MIB
@@ -21,7 +24,7 @@ from .contracts import Problem, max_range_end
 from .store import content_key
 from .upstream import IRSA, TransferBudget, UpstreamError, check_url, fetch
 
-PIPELINE_VERSION = "irsa-tan-v1"
+PIPELINE_VERSION = "irsa-tan-v2"
 COLLECTIONS = (("spherex_dr1", "DR1", "10.26131/IRSA678"), ("spherex_qr3", "QR3", "10.26131/IRSA662"))
 MISSION_START = date(2025, 4, 1)
 ROW_LIMIT = 500
@@ -118,6 +121,29 @@ def detector_xy(s_region, query):
     return None
 
 
+@lru_cache(maxsize=1)
+def band_index():
+    path = Path(__file__).with_name("data") / "passbands.npz"
+    if not path.is_file():
+        return None
+    with np.load(path, allow_pickle=False) as source:
+        return source["wavelength"], source["bandwidth"], str(source["calibration"])
+
+
+def estimate_passband(detector, position):
+    index = band_index()
+    if index is None or not all(0 <= value <= 2039 for value in position):
+        return None
+    wavelength, bandwidth, version = index
+    size = wavelength.shape[1]
+    ix, iy = (value * (size - 1) / 2039 for value in position)
+    estimate = [float(map_coordinates(values[detector - 1], [[iy], [ix]], order=1)[0])
+                for values in (wavelength, bandwidth)]
+    if not all(np.isfinite(value) and value > 0 for value in estimate):
+        return None
+    return *estimate, version
+
+
 def index_table(table, query, release, doi):
     col = columns(table)
     for row in table:
@@ -155,6 +181,9 @@ def index_table(table, query, release, doi):
             entry["estimatedDetectorXY"] = xy
             distance = min(xy[0], xy[1], 2039 - xy[0], 2039 - xy[1])
             entry["footprintMarginPx"] = round(float(distance), 2)
+            estimated = estimate_passband(detector, xy)
+            if estimated:
+                entry["estimatedWavelengthUm"], entry["estimatedBandwidthUm"], entry["estimatedBandCalibration"] = estimated
         survey_target = value("target_name")
         if survey_target:
             entry["surveyTarget"] = str(survey_target)
@@ -213,7 +242,10 @@ def rank(frame, query):
     gap = abs(wave - estimated) if wave is not None and estimated is not None else 0
     margin = frame.get("footprintMarginPx", -30)
     min_margin = query["fovArcmin"] * 60 / imaging.PIXEL_ARCSEC * 0.72
-    return gap, margin < min_margin, frame["startUtc"], frame["productId"]
+    # Footprint corner estimates may be off by a few native pixels. Preserve near misses for the FITS check.
+    band = frame.get("estimatedBandwidthUm", 0)
+    match = wave is None or estimated is None or gap <= band / 2 + 0.006
+    return not match, margin < min_margin, gap, frame["startUtc"], frame["productId"]
 
 
 def make_manifest(query, indexed, *, collections=None, complete=True, warnings=()):
@@ -224,6 +256,10 @@ def make_manifest(query, indexed, *, collections=None, complete=True, warnings=(
     visit_groups(frames)
     if query.get("detector") is not None:
         frames = [frame for frame in frames if frame["detector"] == query["detector"]]
+    if query.get("wavelengthUm") is not None:
+        wave = query["wavelengthUm"]
+        frames = [frame for frame in frames if "estimatedWavelengthUm" not in frame
+                  or abs(frame["estimatedWavelengthUm"] - wave) <= frame["estimatedBandwidthUm"] / 2 + 0.012]
     # Index the best candidate on every real date first, followed by same-day repeats. This preserves calendar breadth on the first page.
     dates = {}
     for frame in frames:
@@ -231,10 +267,11 @@ def make_manifest(query, indexed, *, collections=None, complete=True, warnings=(
     ordered = [sorted(same_day, key=lambda frame: rank(frame, query)) for same_day in dates.values()]
     first = [items[0] for items in ordered]
     rest = [frame for same_day in ordered for frame in same_day[1:]]
+    empty_status = "NO_COMPARABLE_FRAMES" if any(k in query for k in ("detector", "wavelengthUm")) else "NO_COVERAGE"
     return {"schemaVersion": 1, "pipelineVersion": PIPELINE_VERSION, "query": query, "grid": imaging.grid_for(query),
             "counts": {"products": len(frames), "pointings": len({f["obsId"] for f in frames}), "observationDates": len(dates),
                        "independentEpochs": len({f["visitId"] for f in frames}), "preparedFrames": 0},
-            "searchStatus": "PARTIAL" if not complete else ("OK" if frames else "NO_COVERAGE"), "complete": complete,
+            "searchStatus": "PARTIAL" if not complete else ("OK" if frames else empty_status), "complete": complete,
             "warnings": list(warnings), "collections": collections or [], "visitGrouping": "Consecutive pointings less than 24 hours apart",
             "frames": first + rest}
 

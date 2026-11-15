@@ -231,9 +231,14 @@
     "title": "Epsilon Indi B",
     "baselineDays": 191.96983255787038,
     "catalogReference": {
-      "id": "2MASS J22041052\u22125646577",
+      "id": "2MASS J22041052−5646577",
       "source": "https://www.aanda.org/articles/aa/pdf/2004/03/aa0292.pdf",
-      "epoch": "J2026.0"
+      "epoch": "J2026.0",
+      "referenceRaDeg": 331.043833333,
+      "referenceDecDeg": -56.782694444,
+      "referenceEpoch": "1999.855",
+      "pmRaCosDecMasYr": 3976,
+      "pmDecMasYr": -2500
     },
     "presetSlug": "epsilon-indi-b",
     "referenceStretch": [

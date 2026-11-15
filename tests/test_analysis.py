@@ -154,3 +154,99 @@ def test_forecast_refuses_stationary_ambiguous_and_curved_measurements():
     assert bad["forecast"] is None
     assert len(bad["measurements"]) == 3
 
+
+
+def _gaussian_kernel(sigma_x, sigma_y):
+    y, x = np.mgrid[-4:5, -4:5]
+    kernel = np.exp(-0.5 * ((x / sigma_x)**2 + (y / sigma_y)**2))
+    kernel[(abs(x) > 3) | (abs(y) > 3)] = 0
+    return kernel / kernel.sum()
+
+
+def _psf_pair(*, asymmetric=False):
+    from scipy.ndimage import convolve
+
+    a, b = [scene(i, stable=False, random=False, wavelengthCalibration="cwave-cband", epsfValidated=False)
+            for i in range(2)]
+    true_scene = np.full((N, N), 20.0)
+    for x, y, flux in STABLE:
+        true_scene[y, x] += flux
+    a_psf = _gaussian_kernel(0.90, 0.98)
+    if asymmetric:
+        a_psf[4, 0] = 0.001
+        a_psf /= a_psf.sum()
+    b_psf = _gaussian_kernel(1.17, 0.85)
+    a.update(effectivePsf=a_psf, image=convolve(true_scene, a_psf))
+    b.update(effectivePsf=b_psf, image=convolve(true_scene * 1.04 + 5.0, b_psf))
+    return a, b
+
+
+def test_archived_psfs_cross_convolve_and_propagate_variance():
+    a, b = _psf_pair()
+    diff, total, variance, valid, diagnostics = _matched(a, b)
+    calibration = diagnostics["registration"]
+    assert diagnostics["quantitative"]
+    assert calibration["psfMatchingStatus"] == "MATCHED"
+    assert calibration["preMatchReferenceCount"] == len(STABLE)
+    assert calibration["psfProfileReferenceCount"] == len(STABLE)
+    assert calibration["psfProfileMedianDifference"] < 1e-10
+    assert calibration["postMatchMedianResidualPx"] < 1e-10
+    assert diagnostics["photometricScaleA"] == pytest.approx(np.sqrt(1.04))
+    assert diagnostics["photometricScaleB"] == pytest.approx(1 / np.sqrt(1.04))
+    assert diagnostics["backgroundOffsetBminusAMJySr"] == pytest.approx(5 / np.sqrt(1.04))
+    assert valid.sum() == (N - 6)**2
+    assert np.allclose(diff[valid], 0, atol=1e-10)
+    assert total[31, 31] == pytest.approx(40 * np.sqrt(1.04) + 5 / np.sqrt(1.04))
+    expected = (1.04 * (b["effectivePsf"]**2).sum() + (a["effectivePsf"]**2).sum() / 1.04) * 0.25**2
+    assert np.allclose(variance[valid], expected, atol=1e-10)
+    info, _ = compare(a, b, "residual_score")
+    assert info["units"] == "heuristic score"
+    assert "Cross-convolved" in info["method"]
+
+
+def test_psf_support_respects_asymmetric_kernels_and_local_passbands():
+    a, b = _psf_pair(asymmetric=True)
+    b["wavelength"][31, 30] = 2.3
+    _, _, _, valid, info = _matched(a, b)
+    assert info["quantitative"]
+    assert not valid[31, 30] and not valid[31, 26]
+    assert valid[31, 34]
+    assert info["wavelength"]["localMismatchFraction"] == 1 / N**2
+
+
+def test_insufficient_psf_overlap_keeps_visual_comparison():
+    a, b = _psf_pair()
+    b["valid"][18:46, 24:] = False
+    _, _, _, valid, info = _matched(a, b)
+    assert np.array_equal(valid, b["valid"])
+    assert info["registration"]["psfMatchingStatus"] == "LOW_KERNEL_SUPPORT"
+    assert info["registration"]["postMatchValidFraction"] < 0.60
+    assert not info["quantitative"]
+    assert detect([a, b])["candidates"] == []
+
+
+def test_archived_psf_presence_does_not_certify_sources():
+    a, b = _psf_pair()
+    a["image"][:] = 20
+    b["image"][:] = 21
+    info, _ = compare(a, b, "difference")
+    assert info["registration"]["psfMatchingStatus"] == "UNVERIFIED_REGISTRATION"
+    assert not info["quantitative"]
+    a, b = _psf_pair()
+    a["metadata"]["epsfValidated"] = True
+    a["effectivePsf"][4, 4] = np.nan
+    info, _ = compare(a, b, "difference")
+    assert info["registration"]["psfMatchingStatus"] == "MISSING_VALID_KERNEL"
+    assert not info["quantitative"]
+
+
+def test_ranked_brightness_requires_a_locally_compatible_aperture():
+    a, b = scene(0, random=False), scene(1, random=False)
+    inject(a["image"], 31, 30, 30)
+    inject(b["image"], 31, 30, 75)
+    measured = detect([a, b])
+    assert [candidate["label"] for candidate in measured["candidates"]] == ["possible variable"]
+    b["wavelength"][30, 30] = 2.4
+    masked = detect([a, b])
+    assert masked["candidates"] == []
+    assert len(masked["sources"][1]["sources"]) > len(STABLE)

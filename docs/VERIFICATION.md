@@ -18,3 +18,23 @@ The server owner approved the hostname and one controlled Caddy restart. The sta
 ## Spectrum validation tolerance
 
 Use the same DR1/QR3 release, individual image ID, detector, position, and observation time when matching a point-source ePSF sample to IRSA Data Explorer forced photometry. Restrict to isolated sources with healthy fits and match central wavelength within 0.005 µm. For retained rows, compare flux within 15% or combined 3σ uncertainty, whichever is larger. Record any systematic offset and leave the spectrum labeled as an independent extraction until a reference comparison passes. [IRSA spectrophotometry reference](https://irsa.ipac.caltech.edu/onlinehelp/spherex/spherex/sp.html)
+
+## Core milestone
+
+All five named examples and the separate literal NASA WISE field pass bundle health and Chromium playback with live discovery forced to return 503. A fresh browser context restores the exact Barnard exposure and comparison link. Keyboard stepping, side-by-side, signed difference legend and 390-pixel mobile layout passed in signed-out Chromium. [Five-target verification matrix](TARGET_TEST_MATRIX.md)
+
+The November 15 covered non-preset request used RA 337.8783221°, Dec −5.1891588°, D1, 3′, May 18–24, 2026. Discovery returned 17 products across three UTC dates, in one independent visit. The earliest prepared image was `level2_2026W21_1A_0442_1D1_spx_l2b-v27-2026-268`, UTC May 20, 2026 at 21:31:37.849, with 99.76% geometric coverage and 84.78% of pixels valid. Discovery took 3.759 s cold and 0.062 s warm. Frame preparation took 16.096 s cold, including 3,977,280 archive bytes, and 0.034 s warm. The image response was 1,441 bytes with an immutable cache policy. These timings were measured from the development host over the deployed HTTPS route.
+
+The separate DR1 coadded spectrum made 104 bounded byte-range reads, transferring 58,000 bytes in 7.66 s. Barnard's center returned 68 finite channels, 32 no-data channels and two known blank dichroic channels. The cube has no observation date axis or channel variance. [IRSA HiPS cube reference](https://caltech-ipac.github.io/irsa-tutorials/spherex-hipscube/)
+
+## External HTTPS
+
+The owner enabled TCP 443 in the provider firewall after the initial external timeouts. Independent HTTP-over-TLS checks of the home page then returned HTTP 200 from Germany, France, Poland and the United States. Caddy continued serving the existing vhosts without a second restart. [External HTTPS home-page checks](https://check-host.net/check-report/57f815d8k2bd)
+
+## Calibrated live spectrum
+
+An extended spectrum at ICRS 133.72675693°, −7.22425717° selected an isolated source near the WISE field center. The deployed native ePSF path returned 4061.93 ± 177.97 µJy at 4.512709 µm in DR1 observation `2025W46_1A_0076_3`, detector 6, UTC 2025-11-10 07:14:12.445, with a 0.035756 µm bandwidth and fit metric 2.09. The public job took 14.27 seconds and downloaded a 3,962,880-byte cutout plus versioned calibration. R Draconis correctly refused flux extraction where its local sky pixels were flagged. The comparison with the independent IRSA forced-photometry result remains a separate gate. [Reference method](https://irsa.ipac.caltech.edu/onlinehelp/spherex/spherex/sp.html)
+
+## Demo and contingency build
+
+The English 23.16-second screen recording shows two real Barnard dates and their signed difference. It labels the saturation limit and NASA/IPAC IRSA provenance. The static fallback can be built at a standalone origin or under the `/Nsac/` project-site prefix with the same shared links, playback, blink and side-by-side selection. [Capture script](../web/scripts/record-demo.mjs) · [Static build instructions](../README.md#static-contingency)

@@ -234,12 +234,17 @@
       }
     ],
     "seriesId": "preset-barnard",
-    "title": "Barnard\u2019s Star",
+    "title": "Barnard’s Star",
     "baselineDays": 366.9862286689815,
     "catalogReference": {
       "id": "HIP 87937",
-      "source": "https://simbad.cds.unistra.fr/simbad/sim-id?Ident=HIP+87937",
-      "epoch": "J2026.0"
+      "source": "https://simbad.u-strasbg.fr/simbad/sim-id?Ident=HIP+87937",
+      "epoch": "J2026.0",
+      "referenceRaDeg": 269.452076959,
+      "referenceDecDeg": 4.693364967,
+      "referenceEpoch": "J2000.0",
+      "pmRaCosDecMasYr": -801.551,
+      "pmDecMasYr": 10362.394
     },
     "presetSlug": "barnard",
     "referenceStretch": [

@@ -7,7 +7,7 @@ import astropy.units as u
 import numpy as np
 from astropy.coordinates import SkyCoord
 from PIL import Image
-from scipy.ndimage import distance_transform_edt, gaussian_filter, maximum_filter
+from scipy.ndimage import binary_erosion, convolve, distance_transform_edt, gaussian_filter, maximum_filter
 from scipy.spatial import cKDTree
 
 from .imaging import wcs_for
@@ -15,6 +15,7 @@ from .store import content_key
 
 MIN_OVERLAP = 0.60
 MAX_REFERENCE_RESIDUAL = 0.30
+MAX_PROFILE_DIFFERENCE = 0.15
 REGISTRATION_FLOOR_PX = 0.15
 MANUAL_FLOOR_PX = 0.50
 
@@ -164,69 +165,173 @@ def _references(a_sources, b_sources):
     a_points = _pixels(a_sources)
     b_points = _pixels(b_sources)
     if not len(a_points) or not len(b_points):
-        return [], [], []
+        return []
     dist, nearest_b = cKDTree(b_points).query(a_points, distance_upper_bound=0.75)
     _, nearest_a = cKDTree(a_points).query(b_points, distance_upper_bound=0.75)
-    offsets, scales, widths = [], [], []
+    references = []
     for i, j in enumerate(nearest_b):
         if not np.isfinite(dist[i]) or nearest_a[j] != i:
             continue
         first, second = a_sources[i], b_sources[j]
         ratio = second["flux"] / first["flux"]
-        if min(first["snr"], second["snr"]) < 12 or not 0.80 <= ratio <= 1.25:
-            continue
-        offsets.append(b_points[j] - a_points[i])
-        scales.append(ratio)
-        widths.append(second["widthPx"] / first["widthPx"])
-    return offsets, scales, widths
+        if min(first["snr"], second["snr"]) >= 12 and 0.80 <= ratio <= 1.25:
+            references.append((first, second))
+    return references
 
 
-def _diagnostics(a, b, a_sources, b_sources):
-    offsets, scales, widths = _references(a_sources, b_sources)
-    if offsets:
+def _diagnostics(references):
+    if references:
+        first, second = zip(*references)
+        offsets = _pixels(second) - _pixels(first)
+        scales = np.array([b["flux"] / a["flux"] for a, b in references])
+        widths = np.array([b["widthPx"] / a["widthPx"] for a, b in references])
         median_offset = np.median(offsets, axis=0)
         median_distance = float(np.median(np.linalg.norm(offsets, axis=1)))
         scatter = float(np.median(np.linalg.norm(offsets - median_offset, axis=1)))
-        scale = float(np.median(scales))
-        width_ratio = float(np.median(widths))
+        log_scales = np.log(scales)
+        log_widths = np.log(widths)
+        scale = float(np.exp(np.median(log_scales)))
+        width_ratio = float(np.exp(np.median(log_widths)))
+        scale_scatter = _sigma(log_scales)
+        width_scatter = _sigma(log_widths)
     else:
-        median_offset = median_distance = scatter = scale = width_ratio = None
-    registration_ok = len(offsets) >= 3 and median_distance < MAX_REFERENCE_RESIDUAL
-    matching_ok = registration_ok and 0.90 <= scale <= 1.11 and 0.90 <= width_ratio <= 1.11
-    epsf_checked = all(f["metadata"].get("epsfValidated") is True for f in (a, b))
+        median_offset = median_distance = scatter = scale = width_ratio = scale_scatter = width_scatter = None
+    registration_ok = len(references) >= 3 and median_distance < MAX_REFERENCE_RESIDUAL
+    matching_ok = (registration_ok and 0.90 <= scale <= 1.11 and 0.90 <= width_ratio <= 1.11
+                   and scale_scatter <= 0.07 and width_scatter <= 0.07)
     return {
-        "referenceCount": len(offsets), "medianOffsetPx": median_offset.tolist() if offsets else None,
+        "referenceCount": len(references), "medianOffsetPx": median_offset.tolist() if references else None,
         "medianResidualPx": median_distance, "medianCenteredResidualPx": scatter,
         "relativeScaleBoverA": scale, "relativeWidthBoverA": width_ratio,
+        "relativeScaleLogScatter": scale_scatter, "relativeWidthLogScatter": width_scatter,
         "registrationVerified": registration_ok, "relativeScaleAndWidthVerified": matching_ok,
-        "epsfValidated": epsf_checked, "method": "Common TAN grid, mutual stable-source centroid checks",
+        "method": "Common TAN grid, mutual stable-source centroid checks",
     }
+
+
+def _effective_psf(frame):
+    psf = np.asarray(frame.get("effectivePsf"), dtype=float)
+    if psf.shape != (9, 9) or not np.isfinite(psf).all() or np.any(psf < 0):
+        return None
+    if not np.isclose(psf.sum(), 1, rtol=0, atol=1e-5):
+        return None
+    yy, xx = np.mgrid[-4:5, -4:5]
+    centroid = np.hypot(np.sum(psf * xx), np.sum(psf * yy))
+    radius = sqrt(float(np.sum(psf * (xx**2 + yy**2))))
+    if centroid > 0.30 or not 0.35 <= radius <= 3.0:
+        return None
+    return psf / psf.sum()
+
+
+def _convolved(frame, kernel, valid, overlap):
+    image = convolve(np.where(valid, frame["image"], 0.0).astype(float), kernel, mode="constant")
+    variance = convolve(np.where(valid, frame["variance"], 0.0).astype(float), kernel**2, mode="constant")
+    return {**frame, "image": image, "variance": variance, "valid": overlap}
+
+
+def _profile_differences(a_image, b_image, valid, references):
+    yy, xx = np.mgrid[-3:4, -3:4]
+    annulus = np.hypot(xx, yy) >= 3
+    differences = []
+    for first, second in references:
+        x, y = np.rint(np.mean(_pixels([first, second]), axis=0)).astype(int)
+        if not (3 <= x < valid.shape[1] - 3 and 3 <= y < valid.shape[0] - 3):
+            continue
+        stamp = np.s_[y - 3:y + 4, x - 3:x + 4]
+        if not valid[stamp].all():
+            continue
+        a = np.maximum(a_image[stamp] - np.median(a_image[stamp][annulus]), 0)
+        b = np.maximum(b_image[stamp] - np.median(b_image[stamp][annulus]), 0)
+        if a.sum() > 0 and b.sum() > 0:
+            differences.append(float(np.abs(a / a.sum() - b / b.sum()).sum() / 2))
+    return differences
+
+
+def _sky_pixels(a_image, b_image, valid, sources, exclusion_radius):
+    sky = valid.copy()
+    yy, xx = np.indices(sky.shape)
+    for source in sources:
+        sky &= (xx - source["pixel"]["x"]) ** 2 + (yy - source["pixel"]["y"]) ** 2 > exclusion_radius**2
+    if sky.sum() < 25:
+        for image in (a_image, b_image):
+            sky &= image < np.percentile(image[valid], 75)
+    return sky
+
+
+def _cross_convolved(a, b, valid, registration):
+    a_psf, b_psf = _effective_psf(a), _effective_psf(b)
+    details = {"preMatchReferenceCount": registration["referenceCount"],
+               "preMatchMedianResidualPx": registration["medianResidualPx"]}
+    if a_psf is None or b_psf is None:
+        return None, {**details, "psfMatchingStatus": "MISSING_VALID_KERNEL"}
+    if not registration["registrationVerified"]:
+        return None, {**details, "psfMatchingStatus": "UNVERIFIED_REGISTRATION"}
+
+    # Every pixel in either kernel must be covered, unflagged and locally passband compatible.
+    support = (a_psf > 0) | (b_psf > 0)
+    # Convolution reflects its kernel around the output pixel.
+    overlap = valid & binary_erosion(valid, structure=np.flip(support), border_value=0)
+    details["postMatchValidFraction"] = float(overlap.mean())
+    if details["postMatchValidFraction"] < MIN_OVERLAP:
+        return None, {**details, "psfMatchingStatus": "LOW_KERNEL_SUPPORT"}
+    first = _convolved(a, b_psf, valid, overlap)
+    second = _convolved(b, a_psf, valid, overlap)
+    first_sources = _native_sources(first, 50)
+    second_sources = _native_sources(second, 50)
+    references = _references(first_sources, second_sources)
+    diagnostics = _diagnostics(references)
+    profiles = _profile_differences(first["image"], second["image"], overlap, references)
+    median_profile = float(np.median(profiles)) if profiles else None
+    details.update(postMatchReferenceCount=diagnostics["referenceCount"],
+                   postMatchMedianResidualPx=diagnostics["medianResidualPx"],
+                   psfProfileReferenceCount=len(profiles), psfProfileMedianDifference=median_profile)
+    if not diagnostics["relativeScaleAndWidthVerified"] or len(profiles) < 3 or median_profile > MAX_PROFILE_DIFFERENCE:
+        return None, {**details, "psfMatchingStatus": "UNVERIFIED_KERNEL_MATCH"}
+    sky = _sky_pixels(first["image"], second["image"], overlap, first_sources + second_sources, 5)
+    if sky.sum() < 25:
+        return None, {**details, "psfMatchingStatus": "INSUFFICIENT_SKY"}
+    diagnostics.update(details, epsfValidated=True, psfMatchingStatus="MATCHED",
+                       method="Cross-convolved local ePSFs, checked against stable reference profiles")
+    return (first, second, overlap, sky), diagnostics
+
+
+_PSF_WARNINGS = {
+    "MISSING_VALID_KERNEL": "A valid archived effective PSF is missing from one or both frames.",
+    "UNVERIFIED_REGISTRATION": "Matching effective PSFs requires vetted registration before convolution.",
+    "LOW_KERNEL_SUPPORT": "After growing the mask over the PSF footprints, less than 60% of the field is usable.",
+    "UNVERIFIED_KERNEL_MATCH": "The convolved images did not agree on at least three stable source centroids, scales and profiles.",
+    "INSUFFICIENT_SKY": "Too few source-free pixels remain after PSF matching.",
+}
 
 
 def _matched(a, b, a_sources=None, b_sources=None):
     valid, wavelength = _compatible_pair(a, b)
-    a_image = np.asarray(a["image"], dtype=float)
-    b_image = np.asarray(b["image"], dtype=float)
     a_sources = _native_sources(a, 50) if a_sources is None else a_sources
     b_sources = _native_sources(b, 50) if b_sources is None else b_sources
-    registration = _diagnostics(a, b, a_sources, b_sources)
-    sky = valid.copy()
-    yy, xx = np.indices(sky.shape)
-    for source in a_sources + b_sources:
-        sky &= (xx - source["pixel"]["x"]) ** 2 + (yy - source["pixel"]["y"]) ** 2 > 3.5 ** 2
-    if sky.sum() < 25:
-        for image in (a_image, b_image):
-            values = image[valid]
-            sky &= image < np.percentile(values, 75)
+    registration = _diagnostics(_references(a_sources, b_sources))
+    registration["epsfValidated"] = all(f["metadata"].get("wavelengthCalibration") == "synthetic"
+                                        and f["metadata"].get("epsfValidated") is True for f in (a, b))
+    scale_a = scale_b = 1.0
+    matched = None
+    if all(f["metadata"].get("wavelengthCalibration") == "cwave-cband" for f in (a, b)) and wavelength["calibrated"]:
+        matched, diagnostics = _cross_convolved(a, b, valid, registration)
+        registration.update(diagnostics)
+    if matched:
+        a, b, valid, sky = matched
+        scale_a = sqrt(registration["relativeScaleBoverA"])
+        scale_b = 1 / scale_a
+    else:
+        sky = _sky_pixels(a["image"], b["image"], valid, a_sources + b_sources, 3.5)
+
+    a_image = np.asarray(a["image"], dtype=float) * scale_a
+    b_image = np.asarray(b["image"], dtype=float) * scale_b
     background = float(np.median((b_image - a_image)[sky])) if sky.sum() >= 25 else 0.0
     difference = b_image - a_image - background
-    variance = a["variance"] + b["variance"]
+    variance = a["variance"] * scale_a**2 + b["variance"] * scale_b**2
     residual_noise = _sigma(difference[sky])
     noise_ratio = max(1.0, _sigma(difference[sky] / np.sqrt(variance[sky])))
-    quantitative = (
-        wavelength["calibrated"] and registration["relativeScaleAndWidthVerified"]
-        and registration["epsfValidated"] and sky.sum() >= 25
-    )
+    quantitative = (wavelength["calibrated"] and registration["relativeScaleAndWidthVerified"]
+                    and registration["epsfValidated"] and sky.sum() >= 25)
     warnings = []
     if not wavelength["calibrated"]:
         warnings.append("Wavelengths use approximate WCS-WAVE. This difference is a visual estimate.")
@@ -235,13 +340,17 @@ def _matched(a, b, a_sources=None, b_sources=None):
     elif not registration["relativeScaleAndWidthVerified"]:
         warnings.append("Reference sources disagree in brightness scale or width.")
     if not registration["epsfValidated"]:
-        warnings.append("The effective PSF comparison is unverified. Ranked residuals are unavailable.")
+        detail = _PSF_WARNINGS.get(registration.get("psfMatchingStatus"))
+        if detail:
+            warnings.append(detail)
+        warnings.append("This is a visual comparison. Ranked residuals require verified effective PSF matching.")
     if sky.sum() < 25:
         warnings.append("Too few source-free pixels support a background match.")
     metadata = {
         "registration": registration, "wavelength": wavelength, "quantitative": bool(quantitative),
         "validFraction": float(valid.mean()), "maskedFraction": float(1 - valid.mean()), "warnings": warnings,
         "backgroundOffsetBminusAMJySr": background, "backgroundPixels": int(sky.sum()),
+        "photometricScaleA": scale_a, "photometricScaleB": scale_b,
         "skyResidualNoiseMJySr": residual_noise, "heuristicNoiseInflation": float(noise_ratio),
     }
     return difference, a_image + b_image, variance, valid, metadata
@@ -286,9 +395,12 @@ def compare(frame_a, frame_b, mode):
     else:
         limits = [0.0, max(float(np.percentile(values[valid], 99)), 1e-8)]
     first, second = frame_a["metadata"], frame_b["metadata"]
+    method = "Shared TAN grid and robust additive sky matching, with equal and opposite sky corrections."
+    if info["registration"].get("psfMatchingStatus") == "MATCHED":
+        method = "Cross-convolved archived ePSFs, symmetric relative photometric scaling and robust sky matching."
     info.update(frameA=first["frameId"], frameB=second["frameId"], timeA=first["startUtc"],
                 timeB=second["startUtc"], mode=mode, units=units, limits=limits,
-                method="Shared TAN grid and robust additive sky matching, with equal and opposite sky corrections.")
+                method=method)
     return info, _raster(values, valid, limits, signed)
 
 
@@ -449,6 +561,27 @@ def _associate(groups, limit):
     return tracks
 
 
+def _in_footprint(source, valid):
+    x, y = source["pixel"]["x"], source["pixel"]["y"]
+    return valid[int(y + 0.5), int(x + 0.5)]
+
+
+def _matched_brightness(anchor, other, comparison):
+    difference, variance, valid, noise_inflation = comparison
+    center_x, center_y = np.mean(_pixels([anchor, other]), axis=0)
+    x, y = np.rint([center_x, center_y]).astype(int)
+    if not (3 <= x < valid.shape[1] - 3 and 3 <= y < valid.shape[0] - 3):
+        return 0.0
+    yy, xx = np.mgrid[y - 3:y + 4, x - 3:x + 4]
+    core = (xx - center_x)**2 + (yy - center_y)**2 <= 2.9**2
+    if not valid[yy[core], xx[core]].all():
+        return 0.0
+    pixels = yy[core], xx[core]
+    # A sum of standard deviations bounds the error of the aperture sum even with correlated resampling noise.
+    noise = np.sqrt(variance[pixels]).sum() * noise_inflation
+    return float(abs(difference[pixels].sum()) / noise)
+
+
 def detect(frames, *, region=None, limit=50):
     if not 2 <= len(frames) <= 8:
         raise AnalysisError("INVALID_FRAME_COUNT", "Choose two to eight prepared frames.")
@@ -467,6 +600,7 @@ def detect(frames, *, region=None, limit=50):
         raise AnalysisError("SAME_VISIT", "Choose at least two different independent visits.")
     reference = chosen[0]
     certified = [(reference, _native_sources(reference, limit))]
+    comparisons = {}
     tested = []
     sources_preview = []
     for frame in chosen:
@@ -477,22 +611,26 @@ def detect(frames, *, region=None, limit=50):
         if frame is reference:
             continue
         try:
-            _, _, _, _, metadata = _matched(reference, frame, certified[0][1], native)
+            diff, _, variance, valid, metadata = _matched(reference, frame, certified[0][1], native)
         except AnalysisError as problem:
             warnings.append(f"{frame_id}: {problem.message}")
             continue
         if not metadata["quantitative"]:
             warnings.append(f"{frame_id}: candidate ranking requires a calibrated, vetted comparison.")
             continue
+        comparisons[frame_id] = diff, variance, valid, metadata["heuristicNoiseInflation"]
         certified.append((frame, native))
     candidates = []
-    if len(certified) >= 2:
+    if comparisons:
         groups = []
+        reference_id = reference["metadata"]["frameId"]
+        reference_valid = np.logical_or.reduce([comparison[2] for comparison in comparisons.values()])
         for frame, sources in certified:
-            selected = [s for s in sources if not region or (
+            valid = reference_valid if frame is reference else comparisons[frame["metadata"]["frameId"]][2]
+            selected = [s for s in sources if _in_footprint(s, valid) and (not region or (
                 region["x"] <= s["pixel"]["x"] < region["x"] + region["width"]
                 and region["y"] <= s["pixel"]["y"] < region["y"] + region["height"]
-            )]
+            ))]
             groups.append((frame_time(frame["metadata"]), selected))
         qualified = [frame for frame, _ in certified]
         for association in _associate(groups, 100):
@@ -502,10 +640,10 @@ def detect(frames, *, region=None, limit=50):
             ambiguous = association["ambiguous"]
             result = track(qualified, marks=marks, automatic=True, ambiguous=ambiguous)
             position_score = result["separationArcsec"] / result["uncertaintyArcsec"]
-            brightness_score = max(
-                abs(a["flux"] - b["flux"]) / hypot(a["fluxError"], b["fluxError"])
-                for i, a in enumerate(marks) for b in marks[i + 1:]
-            )
+            brightness_score = 0.0
+            if marks[0]["frameId"] == reference_id:
+                brightness_score = max(_matched_brightness(marks[0], source, comparisons[source["frameId"]])
+                                       for source in marks[1:])
             if ambiguous:
                 label, reason = "ambiguous", "Multiple local detections are consistent with this association."
             elif result["forecastStatus"] == "AVAILABLE":
@@ -513,13 +651,14 @@ def detect(frames, *, region=None, limit=50):
             elif position_score >= 3:
                 label, reason = "single-pair change", "Significant apparent displacement. Additional vetted visits are needed."
             elif brightness_score >= 5:
-                label, reason = "possible variable", "Position is consistent and the aperture signal changed across visits."
+                label, reason = "possible variable", "Position is consistent and the matched aperture changed across visits."
             else:
                 continue
             candidates.append({
                 "candidateId": content_key("detection-v1", marks), "label": label, "reason": reason,
                 "ambiguous": ambiguous, "marks": marks,
                 "positionScore": position_score, "brightnessScore": brightness_score,
+                "brightnessMethod": "Common-aperture difference with a conservative correlated-noise bound",
                 "score": min(50.0, max(position_score, brightness_score)) * sqrt(len(marks)) / (2 if ambiguous else 1),
             })
     candidates.sort(key=lambda item: (-item["score"], item["candidateId"]))

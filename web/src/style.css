@@ -110,3 +110,7 @@ footer { border-top: 1px solid var(--line); padding-block: 14px 20px; color: var
 .analysis-line { position: absolute; height: 0; border-top: 2px solid #ffd28e; transform-origin: left center; }
 .analysis-line.analysis-prediction { border-top-style: dashed; }
 .analysis-motion::after { content: ''; position: absolute; right: 0; top: -6px; border-left: 8px solid #ffd28e; border-top: 5px solid transparent; border-bottom: 5px solid transparent; }
+.analysis-uncertainty { border: 1px dashed #ffd28ea8; background: #ffd28e20; }
+
+.contrast label { flex: none; white-space: nowrap; }
+.doi { margin-left: 10px; }

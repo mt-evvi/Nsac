@@ -8,9 +8,10 @@ from fastapi import APIRouter, Request
 from .contracts import (ID, ComparisonQuery, DetectionQuery, OverlayQuery, Problem, SpectrumQuery,
                         TrackQuery, ready)
 from .store import content_key
+from .workers import run_science
 
 router = APIRouter(prefix="/api/v1/series/{series_id}")
-ANALYSIS_VERSION = "v1"
+ANALYSIS_VERSION = "v2"
 
 
 def dataset(service, series_id, frame_id, grid):
@@ -40,8 +41,6 @@ def cached_job(request, service, key, stage, fn, *, extended=False, ttl=None):
 
 @router.post("/comparisons")
 def comparison(series_id: ID, options: ComparisonQuery, request: Request):
-    from . import analysis
-
     service = request.app.state.service
     grid = service.manifest(series_id)["data"]["grid"]
     for frame_id in (options.frameA, options.frameB):
@@ -51,7 +50,7 @@ def comparison(series_id: ID, options: ComparisonQuery, request: Request):
     def work():
         a = dataset(service, series_id, options.frameA, grid)
         b = dataset(service, series_id, options.frameB, grid)
-        metadata, image = analysis.compare(a, b, options.mode)
+        metadata, image = run_science("compare", 5, a, b, options.mode)
         payload = io.BytesIO()
         image.save(payload, format="PNG", optimize=True)
         name = service.store.write_asset(payload.getvalue(), "png")
@@ -64,8 +63,6 @@ def comparison(series_id: ID, options: ComparisonQuery, request: Request):
 
 @router.post("/detections")
 def detections(series_id: ID, options: DetectionQuery, request: Request):
-    from . import analysis
-
     service = request.app.state.service
     grid = service.manifest(series_id)["data"]["grid"]
     ids = options.frameIds
@@ -81,7 +78,7 @@ def detections(series_id: ID, options: DetectionQuery, request: Request):
 
     def work():
         frames = [dataset(service, series_id, frame_id, grid) for frame_id in ids]
-        result = analysis.detect(frames, region=region)
+        result = run_science("detect", 12, frames, region=region)
         for item in result["candidates"]:
             service.store.put("candidate", f"{series_id}:{item['candidateId']}", item)
         return ready({**result, "analysisId": key}, result.get("warnings", []))
@@ -98,8 +95,6 @@ def candidate(service, series_id, candidate_id):
 
 @router.post("/tracks")
 def track(series_id: ID, options: TrackQuery, request: Request):
-    from . import analysis
-
     service = request.app.state.service
     grid = service.manifest(series_id)["data"]["grid"]
     linked = candidate(service, series_id, options.candidateId) if options.candidateId else None
@@ -111,7 +106,7 @@ def track(series_id: ID, options: TrackQuery, request: Request):
 
     def work():
         frames = [dataset(service, series_id, frame_id, grid) for frame_id in ids]
-        result = analysis.track(frames, marks=marks, horizon_days=options.horizonDays,
+        result = run_science("track", 2, frames, marks=marks, horizon_days=options.horizonDays,
                                 automatic=linked is not None, ambiguous=bool(linked and linked.get("ambiguous")))
         return ready(result)
 

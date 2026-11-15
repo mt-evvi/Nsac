@@ -1,10 +1,13 @@
 import './style.css'
 import { installAnalysis } from './analysis.ts'
 
+const staticOnly = import.meta.env.VITE_STATIC_PRESET_ONLY === '1'
+const appBase = staticOnly ? import.meta.env.BASE_URL : '/'
+
 export type Frame = {
   frameId: string; productId: string; obsId: string; slotKey: string; startUtc: string; endUtc: string
   visitId: string; surveyPass?: string; release: string; detector: number; archiveUrl: string
-  imageUrl?: string; wavelengthUm?: number; bandwidthUm?: number; coverageFraction?: number; validFraction?: number
+  imageUrl?: string; archiveDoi?: string; wavelengthUm?: number; bandwidthUm?: number; coverageFraction?: number; validFraction?: number
   flags?: string[]; warnings?: string[]; stretch?: number[]; representation?: string
 }
 export type Query = { raDeg: number; decDeg: number; fovArcmin: number; start?: string; end?: string; wavelengthUm?: number; detector?: number }
@@ -19,6 +22,7 @@ const known = new Map([
   ['barnard', { name: 'Barnard’s Star', raDeg: 269.45, decDeg: 4.768, fovArcmin: 3 }],
   ['epsilon-indi-b', { name: 'Epsilon Indi B', raDeg: 331.09656943, decDeg: -56.80083957, fovArcmin: 3 }],
   ['wise-0855', { name: 'WISE 0855', raDeg: 133.75977, decDeg: -7.24218, fovArcmin: 5 }],
+  ['wise-0855-nasa', { name: 'WISE 0855 (NASA coordinates)', raDeg: 133.79512917, decDeg: -7.24514722, fovArcmin: 6 }],
   ['rw-aurigae', { name: 'RW Aurigae', raDeg: 76.95654167, decDeg: 30.40144444, fovArcmin: 3 }],
   ['r-draconis', { name: 'R Draconis', raDeg: 248.16761, decDeg: 66.75498, fovArcmin: 3 }],
 ])
@@ -58,6 +62,7 @@ function note(message: string, kind = '') {
   const status = el('status')
   status.textContent = message
   status.dataset.kind = kind
+  const retry = document.getElementById('retry-observation'); if (retry) retry.hidden = kind !== 'error'
 }
 function formatTime(time: string) { return `${time.replace('T', ' ').replace(/\.\d+Z$/, 'Z').replace(/Z$/, '')} UTC` }
 function delay(ms: number, signal: AbortSignal) {
@@ -135,7 +140,7 @@ function urlFor(query: Query, example?: string) {
     detector: query.detector, interval: select('interval').value, a: shown?.productId, b: paired?.productId, mode: viewMode, marks: shareMarkParameter })) {
     if (value) params.set(key, String(value))
   }
-  return `/explore?${params}`
+  return `${appBase}explore${staticOnly ? '/' : ''}?${params}`
 }
 function share() {
   if (manifest) history.replaceState(null, '', urlFor(manifest.query, preset))
@@ -188,7 +193,8 @@ function timeline(index: number, frame?: Frame) {
   el('timeline-note').textContent = slots.length === 1 ? 'Only one usable date is available in this selection. Playback requires at least two dates.' : `${manifest?.counts.observationDates ?? 0} archive dates · ${prepared.size} prepared in this session · ${slots.length} occupied intervals`
 }
 function readImage(url: string, signal: AbortSignal) {
-  const checked = sameOrigin(url, url.startsWith('/presets/') ? '/presets/' : '/data/')
+  const asset = url.startsWith('/presets/') ? `${appBase}${url.slice(1)}` : url
+  const checked = sameOrigin(asset, asset.startsWith(`${appBase}presets/`) ? `${appBase}presets/` : '/data/')
   if (raster.has(checked)) return Promise.resolve(raster.get(checked)!)
   return new Promise<HTMLImageElement>((resolve, reject) => {
     if (signal.aborted) return reject(signal.reason)
@@ -224,6 +230,14 @@ function paint(canvas: HTMLCanvasElement, image?: HTMLImageElement) {
   context.fillStyle = '#141c29'
   if (image && size > 0) {
     context.fillRect(left, top, size, size)
+    context.save()
+    context.beginPath(); context.rect(left, top, size, size); context.clip()
+    context.strokeStyle = '#263244'
+    context.lineWidth = 1
+    for (let shift = -size; shift < size; shift += 12) {
+      context.beginPath(); context.moveTo(left + shift, top); context.lineTo(left + shift + size, top + size); context.stroke()
+    }
+    context.restore()
     context.imageSmoothingEnabled = false
     context.filter = `contrast(${input('contrast').value})`
     context.drawImage(image, left, top, size, size)
@@ -251,6 +265,9 @@ function details(frame: Frame) {
   if (frame.archiveUrl.startsWith('https://irsa.ipac.caltech.edu/')) {
     const source = document.createElement('a'); source.href = frame.archiveUrl; source.textContent = 'Original IRSA product ↗'; item.append(source)
   }
+  if (frame.archiveDoi && /^10\.26131\/IRSA\d+$/.test(frame.archiveDoi)) {
+    const citation = document.createElement('a'); citation.href = `https://doi.org/${frame.archiveDoi}`; citation.textContent = 'Release DOI ↗'; citation.className = 'doi'; item.append(citation)
+  }
   for (const warning of frame.warnings ?? []) { const p = document.createElement('p'); p.textContent = warning; item.append(p) }
 }
 async function prepare(frame: Frame, signal: AbortSignal, representation = 'exposure') {
@@ -266,8 +283,8 @@ let pinnedB: string | null = null
 let shareMarkParameter: string | undefined
 let manifestPages: AbortController | undefined
 let retrySlot: number | undefined
-const validModes = ['single', 'blink', 'side', 'difference', 'absolute_change', 'residual_score', 'sum']
-const presetPath = (slug: string) => `/presets/${slug}/manifest.json`
+const validModes = staticOnly ? ['single', 'blink', 'side'] : ['single', 'blink', 'side', 'difference', 'absolute_change', 'residual_score', 'sum']
+const presetPath = (slug: string) => `${appBase}presets/${slug}/manifest.json`
 const statusMessage = (error: unknown) => error instanceof Error ? error.message : 'The operation could not be completed.'
 
 function updatePrepared(frame: Frame) {
@@ -374,15 +391,14 @@ const pairNote = document.createElement('p')
 const pairController = { value: new AbortController() }
 function updatePairChoices() {
   if (!shown || !manifest) return
-  const alternatives = manifest.frames.filter(item => item.frameId !== shown!.frameId && item.slotKey !== shown!.slotKey)
-  const candidates = alternatives.filter((frame, idx) => alternatives.findIndex(other => other.slotKey === frame.slotKey) === idx)
+  const candidates = manifest.frames.filter(item => item.frameId !== shown!.frameId).slice(0, 500)
   candidates.sort((a, b) => a.startUtc.localeCompare(b.startUtc))
   pairPick.replaceChildren(new Option('Choose a second observation', ''), ...candidates.map(
     frame => new Option(`${formatTime(frame.startUtc)} · D${frame.detector}`, frame.frameId)))
   if (paired && !candidates.some(item => item.frameId === paired!.frameId)) {
     const frame = paired
-    if (frame.slotKey !== shown.slotKey) pairPick.add(new Option(formatTime(frame.startUtc), frame.frameId))
-    else paired = undefined
+    if (frame.frameId !== shown.frameId) pairPick.add(new Option(formatTime(frame.startUtc), frame.frameId))
+    else { paired = undefined; renderedPair = undefined; setMode('single') }
   }
   if (paired) pairPick.value = paired.frameId
   el('pair-panel').hidden = !candidates.length
@@ -496,7 +512,10 @@ async function loadIndex(query: Query, example: string | undefined, fromLink = f
     expires.disabled = !manifest.frames.some(frame => frame.surveyPass)
     if (expires.disabled && select('interval').value === 'passes') select('interval').value = 'dates'
     if (!manifest.frames.length) {
-      note(manifest.searchStatus === 'NO_COVERAGE' ? 'No published observations cover this field and selection.' : 'The incomplete archive reply contains no candidate observations. Try again or open an example.', 'error')
+      const empty = manifest.searchStatus === 'NO_COVERAGE' ? 'No published observations cover this field and selection.'
+        : manifest.searchStatus === 'NO_COMPARABLE_FRAMES' ? 'No exposures match the selected detector, wavelength and dates.'
+        : 'The incomplete archive reply contains no candidate observations. Try again or open an example.'
+      note(empty, 'error')
       return
     }
     if (pinnedA && !manifest.frames.some(frame => frame.productId === pinnedA)) await loadMore(true)
@@ -542,17 +561,21 @@ async function loadMore(toFindPin = false) {
 }
 
 function readLocation() {
-  if (location.pathname !== '/explore') return
+  if (![`${appBase}explore`, `${appBase}explore/`].includes(location.pathname)) return
   try {
     const params = new URLSearchParams(location.search)
     const example = params.get('preset') ?? undefined
     const coords = example ? known.get(example) : undefined
     if (example && !coords) throw new Error('This example field is unavailable.')
+    if (staticOnly && !coords) throw new Error('Live lookup is unavailable in this static copy. Choose a bundled example.')
     const query = validate({ raDeg: coordinate(params.get('ra') ?? String(coords?.raDeg ?? ''), true),
       decDeg: coordinate(params.get('dec') ?? String(coords?.decDeg ?? ''), false), fovArcmin: Number(params.get('fov') ?? coords?.fovArcmin ?? 3),
       start: params.get('start') || undefined, end: params.get('end') || undefined,
       wavelengthUm: params.has('wave') ? Number(params.get('wave')) : undefined,
       detector: params.has('detector') ? Number(params.get('detector')) : undefined })
+    if (coords && (Math.abs(coords.raDeg - query.raDeg) > 1e-6 || Math.abs(coords.decDeg - query.decDeg) > 1e-6 || coords.fovArcmin !== query.fovArcmin)) {
+      throw new Error('This example link has different sky coordinates or field width. Choose an example or search these coordinates directly.')
+    }
     select('interval').value = ['dates', 'week', 'month', 'passes'].includes(params.get('interval') ?? '') ? params.get('interval')! : 'dates'
     viewMode = validModes.includes(params.get('mode') ?? '') ? params.get('mode')! : 'single'
     pinnedA = params.get('a'); pinnedB = params.get('b')
@@ -566,13 +589,16 @@ function readLocation() {
 
 const moreButton = createButton('More indexed exposures', () => { void loadMore() })
 moreButton.hidden = true
-el('timeline-panel').append(moreButton, createButton('Retry selected observation', () => { if (retrySlot !== undefined) void choose(retrySlot) }))
+const retryButton = createButton('Retry selected observation', () => { if (retrySlot !== undefined) void choose(retrySlot) })
+retryButton.id = 'retry-observation'
+retryButton.hidden = true
+el('timeline-panel').append(moreButton, retryButton)
 modePick.setAttribute('aria-label', 'Comparison view')
 pairPick.setAttribute('aria-label', 'Second observation date')
 modePick.replaceChildren(...[
   ['single', 'Single frame'], ['blink', 'Blink'], ['side', 'Side by side'], ['difference', 'Signed difference (B − A)'],
   ['absolute_change', 'Absolute change'], ['sum', 'Sum (A + B)'], ['residual_score', 'Residual score'],
-].map(([value, label]) => new Option(label, value)))
+].filter(([value]) => validModes.includes(value)).map(([value, label]) => new Option(label, value)))
 function onPairChange() {
   const candidate = manifest?.frames.find(frame => frame.frameId === pairPick.value)
   const mode = modePick.value === 'single' && candidate ? 'side' : modePick.value
@@ -673,8 +699,15 @@ function mark(target: 'a' | 'b', x: number, y: number, cssClass: string, title?:
 }
 export const analysisApi = {
   manifest: () => manifest, shown: () => shown, paired: () => paired,
+  displayed: (target: 'a' | 'b') => target === 'b' || (viewMode === 'blink' && blinkB) ? paired : shown,
+  displayMode: () => viewMode,
   prepare, showPrepared, data, note, position, mark, redraw,
   shareMarks(value?: string) { shareMarkParameter = value?.slice(0, 1000); share() },
 }
-installAnalysis(analysisApi)
+if (staticOnly) {
+  el('query-form').hidden = true
+  document.querySelector<HTMLAnchorElement>('.brand')!.href = appBase
+  const explanation = el('title').nextElementSibling!
+  explanation.textContent = 'Static copy · Play the bundled real examples and compare dates. Live lookup and scientific analysis require the server.'
+} else installAnalysis(analysisApi)
 readLocation()

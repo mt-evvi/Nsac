@@ -243,7 +243,10 @@
     "catalogReference": {
       "id": "RW Aur",
       "source": "https://vsx.aavso.org/index.php?revid=418953&view=detail.top",
-      "epoch": "J2000"
+      "epoch": "J2000",
+      "referenceRaDeg": 76.95654167,
+      "referenceDecDeg": 30.40144444,
+      "referenceEpoch": "J2000"
     },
     "presetSlug": "rw-aurigae",
     "referenceStretch": [

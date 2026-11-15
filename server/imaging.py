@@ -3,6 +3,7 @@
 import io
 import random
 import time
+from pathlib import Path
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import numpy as np
@@ -169,6 +170,52 @@ def calibrated_passbands(path, header, cx, cy, x, y):
     return (*center, *projected)
 
 
+def effective_psf(hdul, header, cx, cy, x_grid, y_grid, native_shape):
+    """Project the nearest official ePSF zone at the exposure's actual sampling phase."""
+    if "EPSF" not in hdul or min(x_grid.shape) < 9:
+        return None, None
+    extension = hdul["EPSF"]
+    rows = extension.header.get("NAXIS2", 0)
+    width = extension.header.get("NAXIS1", 0)
+    if not 1 <= rows <= 500 or not 0 < width <= 20000:
+        return None, None
+    try:
+        native_x, native_y = alternate_wcs(header, "A").pixel_to_world_values(cx, cy)
+        table = extension.data
+        distance = np.hypot(table["XCENTER"] - native_x, table["YCENTER"] - native_y)
+        if not np.isfinite(distance).any():
+            return None, None
+        zone = int(np.nanargmin(distance))
+        response = np.asarray(table["EPSF"][zone], dtype=float)
+        sx, sy = extension.header["OVSMPX"], extension.header["OVSMPY"]
+        if (response.ndim != 2 or min(response.shape) < 9 or max(response.shape) > 128
+                or not 1 <= sx <= 20 or not 1 <= sy <= 20 or not np.isfinite(response).all()):
+            return None, None
+        row, col = np.indices(native_shape, dtype=float)
+        pixels = map_coordinates(response, [(row - cy) * sy + (response.shape[0] - 1) / 2,
+                                            (col - cx) * sx + (response.shape[1] - 1) / 2],
+                                 order=3, mode="constant", cval=0)
+        pixels = np.maximum(pixels, 0)
+        # Evaluate on a regular TAN grid centered on the source, including even display sizes.
+        ref_row = (x_grid.shape[0] - 1) / 2
+        ref_col = (x_grid.shape[1] - 1) / 2
+        ky, kx = np.indices((9, 9), dtype=float)
+        rows = [ky + ref_row - 4, kx + ref_col - 4]
+        x = map_coordinates(x_grid, rows, order=1, mode="nearest")
+        y = map_coordinates(y_grid, rows, order=1, mode="nearest")
+        aligned, _, coverage, _ = resample(pixels, np.ones(native_shape), np.ones(native_shape, dtype=bool), x, y)
+        if not np.isfinite(aligned).all() or np.min(coverage) < 0.999:
+            return None, None
+        total = float(aligned.sum())
+        if total <= 0 or not 0.04 <= aligned[4, 4] / total <= 0.85:
+            return None, None
+        stamp = (aligned / total).astype(np.float32)
+        return stamp, {"extension": "EPSF", "zone": zone, "nativeOversampling": [sx, sy],
+                       "method": "Local official ePSF projected through the same native-to-TAN resampling"}
+    except (KeyError, TypeError, ValueError, IndexError):
+        return None, None
+
+
 def process(payload, query, entry, grid, stretch=None, spectral_calibration=None):
     try:
         with fits.open(io.BytesIO(payload), memmap=False) as hdul:
@@ -206,6 +253,7 @@ def process(payload, query, entry, grid, stretch=None, spectral_calibration=None
                 wave, band = np.nan, np.nan
                 wave_grid, band_grid = np.full_like(image, np.nan), np.full_like(image, np.nan)
             mid = timestamp(header, "DATE-AVG") if "DATE-AVG" in header else start
+            psf, psf_metadata = effective_psf(hdul, header, cx, cy, x, y, raw.shape)
     except (KeyError, ValueError, OSError) as exc:
         raise Problem("BAD_FITS", "The archive cutout is incomplete or has invalid FITS headers.") from exc
     footprint = float(np.mean(coverage >= 0.999))
@@ -232,9 +280,10 @@ def process(payload, query, entry, grid, stretch=None, spectral_calibration=None
                 "archiveDoi": {"DR1": "10.26131/IRSA678", "QR3": "10.26131/IRSA662"}.get(entry["release"].upper()),
                 "transferBytes": len(payload)}
     if spectral_calibration is not None:
-        from pathlib import Path
-
         metadata["wavelengthCalibrationId"] = Path(spectral_calibration).name
+    if psf is not None:
+        arrays["effectivePsf"] = psf
+        metadata["epsfModel"] = psf_metadata
     return metadata, arrays, png, mask
 
 
@@ -309,9 +358,11 @@ def coadd(manifest, candidate, store, result_id):
     keep = used > 1
     result = dict(first, image=np.divide(weighted, sum_weight, out=np.full_like(weighted, np.nan), where=keep),
                   variance=np.divide(1, sum_weight, out=np.full_like(sum_weight, np.nan), where=keep), valid=keep)
+    result.pop("effectivePsf", None)
     stretch, png, mask = render_frame(result, anchor.get("stretch"))
     data = {**anchor, "frameId": result_id, "representation": "coadd", "stretch": stretch,
             "startUtc": min(frame["startUtc"] for frame in contributors), "endUtc": max(frame["endUtc"] for frame in contributors),
             "contributors": [{key: frame[key] for key in ("productId", "archiveUrl", "startUtc", "endUtc")} for frame in contributors],
             "validFraction": float(np.mean(keep)), "warnings": ["Within-visit inverse-variance mean. Pixels require at least two contributors."]}
+    data.pop("epsfModel", None)
     return data, result, png, mask

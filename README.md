@@ -29,6 +29,14 @@ npm --prefix web run build
 
 The real-data verification command requires IRSA access and records both source observation IDs, times, calibrated wavelengths, masks and comparison-quality measurements. [Verification evidence](docs/VERIFICATION.md) · [Build and release gates](BUILD_PLAN.md) · [Server rollout](deploy/README.md)
 
+## Static contingency
+
+```sh
+SPHEREX_STATIC_BASE=/Nsac/ npm --prefix web run build:static
+```
+
+Publish the generated `web/dist-static` directory at `/Nsac/` for project-root hosting such as GitHub Pages. Omit the environment variable for a standalone hostname. The static copy supports bundled playback, share links, blink and side-by-side. Live discovery and analyses use the FastAPI deployment. [Original starting README](docs/STARTING_README.md)
+
 ## Data acknowledgement
 
 This project makes use of data products from the Spectro-Photometer for the History of the Universe, Epoch of Reionization and Ices Explorer (SPHEREx), which is a joint project of the Jet Propulsion Laboratory and the California Institute of Technology, and is funded by the National Aeronautics and Space Administration. [IRSA mission archive](https://irsa.ipac.caltech.edu/Missions/spherex.html) · [DR1 DOI](https://doi.org/10.26131/IRSA678) · [QR3 DOI](https://doi.org/10.26131/IRSA662)

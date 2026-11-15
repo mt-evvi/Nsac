@@ -138,3 +138,26 @@ def test_app_declares_same_origin_routes(tmp_path):
     routes = set(app.openapi()["paths"])
     routes.update(route.path for route in app.routes if hasattr(route, "path"))
     assert {"/", "/explore", "/readyz", "/api/v1/series", "/data/{name}", "/presets"} <= routes
+
+
+def test_ten_concurrent_clients_coalesce_and_preserve_analysis_slot(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    release = threading.Event()
+    jobs = Jobs(Settings(cache=tmp_path, job_workers=2))
+
+    def work():
+        assert release.wait(3)
+        return ready({"ready": True})
+
+    try:
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            results = list(executor.map(lambda i: jobs.submit('shared', f'ip{i}', f'session{i}', 'frame', work), range(10)))
+        assert len({item['jobId'] for item in results}) == 1
+        first = jobs.submit('analysisA', 'analysisA', 'analysisA', 'compare', work, extended=True)
+        second = jobs.submit('analysisB', 'analysisB', 'analysisB', 'compare', work, extended=True)
+        assert first['status'] == 'running' and second['status'] == 'queued'
+        assert len(jobs.running) == 2
+    finally:
+        release.set()
+        jobs.close()

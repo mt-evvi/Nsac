@@ -180,9 +180,15 @@
     "title": "WISE 0855",
     "baselineDays": 163.45577065972222,
     "catalogReference": {
-      "id": "WISE J085510.83\u2212071442.5",
+      "id": "WISE J085510.83−071442.5",
       "source": "https://doi.org/10.3847/0004-6256/152/3/78",
-      "epoch": "J2026.0"
+      "epoch": "J2026.0",
+      "referenceRaDeg": 133.795224,
+      "referenceDecDeg": -7.245138,
+      "referenceEpoch": "MJD 55320.4",
+      "pmRaCosDecMasYr": -8188,
+      "pmDecMasYr": 680,
+      "positionSource": "https://arxiv.org/abs/1404.6501"
     },
     "presetSlug": "wise-0855",
     "referenceStretch": [

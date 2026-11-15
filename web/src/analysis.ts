@@ -172,16 +172,18 @@ export function installAnalysis(api: AnalysisApi) {
   let armed: Pane | 'spectrum' | undefined
   let cursor: Pixel | undefined
   let operation: AbortController | undefined
+  let operationScope: 'pair' | 'series'
   let overlayJob: AbortController | undefined
   let overlayTimer = 0
   let activePair = ''
   let pendingShare = new URLSearchParams(location.search).get('marks')
 
-  async function run(status: HTMLElement, stage: string, task: (signal: AbortSignal) => Promise<void>) {
+  async function run(status: HTMLElement, stage: string, task: (signal: AbortSignal) => Promise<void>, scope: 'pair' | 'series' = 'pair') {
     operation?.abort()
     overlayJob?.abort()
     const controller = new AbortController()
     operation = controller
+    operationScope = scope
     status.textContent = stage
     try { await task(controller.signal) }
     catch (error) {
@@ -434,6 +436,8 @@ export function installAnalysis(api: AnalysisApi) {
     tracked = undefined
     forecastLabel.hidden = true
     showForecast.checked = false
+    motionLabel.hidden = true
+    showMotion.checked = false
     trackResults.replaceChildren()
   }
 
@@ -492,6 +496,7 @@ export function installAnalysis(api: AnalysisApi) {
   showMotion.onchange = api.redraw
 
   measure.onclick = () => {
+    if (api.shown()?.visitId === api.paired()?.visitId) return
     const selected = [...marks.values()].map(({frameId, pixel}) => ({frameId, pixel}))
     if (selected.length !== 2) return
     void run(trackStatus, 'Measuring angular separation…', async signal => {
@@ -684,8 +689,8 @@ export function installAnalysis(api: AnalysisApi) {
       const merged = await api.prepare(frame, signal, 'coadd')
       if (signal.aborted) return
       await api.showPrepared(merged)
-      coaddCaption.textContent = merged.warnings?.join(' ') ?? 'Within-visit coadd is displayed.'
-    })
+      coaddCaption.textContent = merged.warnings?.join(' ') || 'Within-visit coadd is displayed.'
+    }, 'series')
   }
 
   const spectrumTarget = choose([['center', 'Field center'], ['point', 'Picked sky position'], ['candidate', 'Active detected candidate']])
@@ -749,7 +754,7 @@ export function installAnalysis(api: AnalysisApi) {
       if (signal.aborted) return
       spectrumStatus.textContent = response.status === 'partial' ? 'Partial spectrum. Unavailable bins are listed below.' : 'Spectrum ready.'
       displaySpectrum(response.data, response.warnings)
-    })
+    }, 'series')
   }
 
   function displaySpectrum(spectrum: Spectrum, warnings: string[]) {
@@ -846,11 +851,23 @@ export function installAnalysis(api: AnalysisApi) {
         api.mark('a', last.pixel.x, last.pixel.y, 'analysis-motion-point', 'Measured end'), 'analysis-motion')
     }
     if (showForecast.checked && tracked?.forecast) {
+      const grid = api.manifest()!.grid
+      const [[a, b], [c, d]] = grid.cd
+      const arcsecPerPixel = Math.sqrt(Math.abs(a * d - b * c)) * 3600
       let previous: HTMLElement | void = undefined
-      for (const sample of tracked.forecast.samples) {
+      const samples = tracked.forecast.samples
+      const bandSamples = new Set([0, Math.floor(samples.length / 2), samples.length - 1])
+      for (const [index, sample] of samples.entries()) {
         const marker = api.mark('a', sample.x, sample.y, 'analysis-forecast', `${sample.timeUtc} · approximate 95% radius ${format(sample.ellipse95Arcsec)}″`)
         joinMarkers(previous, marker, 'analysis-prediction')
         previous = marker
+        if (!marker || !bandSamples.has(index)) continue
+        const probe = api.mark('a', sample.x + 1, sample.y, 'analysis-uncertainty')
+        if (!probe) continue
+        const displayPixelsPerPixel = Math.abs(parseFloat(probe.style.left) - parseFloat(marker.style.left))
+        probe.remove()
+        const band = api.mark('a', sample.x, sample.y, 'analysis-uncertainty')
+        if (band) band.style.width = band.style.height = `${2 * sample.ellipse95Arcsec / arcsecPerPixel * displayPixelsPerPixel}px`
       }
     }
   }
@@ -880,10 +897,9 @@ export function installAnalysis(api: AnalysisApi) {
     for (const frame of [a, b]) if (frame?.imageUrl) seenFrames.set(frame.frameId, frame)
     const pair = `${a?.frameId}:${b?.frameId}`
     if (pair !== activePair) {
+      if (operationScope === 'pair' && activePair) operation?.abort()
       activePair = pair
       clearTrack()
-      motionLabel.hidden = true
-      showMotion.checked = false
       candidateList.replaceChildren()
       selectedCandidate = undefined
       preview = []

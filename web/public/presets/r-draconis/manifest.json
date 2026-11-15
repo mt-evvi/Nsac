@@ -1,0 +1,262 @@
+{
+  "status": "succeeded",
+  "data": {
+    "schemaVersion": 1,
+    "pipelineVersion": "irsa-tan-v1",
+    "query": {
+      "raDeg": 248.16761,
+      "decDeg": 66.75498,
+      "fovArcmin": 3,
+      "start": "2025-04-01",
+      "end": "2026-11-14",
+      "frame": "ICRS"
+    },
+    "grid": {
+      "projection": "TAN",
+      "frame": "ICRS",
+      "width": 29,
+      "height": 29,
+      "crpix": [
+        15.0,
+        15.0
+      ],
+      "crval": [
+        248.16761,
+        66.75498
+      ],
+      "cd": [
+        [
+          -0.0017241379310344827,
+          0.0
+        ],
+        [
+          0.0,
+          0.0017241379310344827
+        ]
+      ],
+      "pixelConvention": "zero-based centers, y increases north"
+    },
+    "counts": {
+      "products": 545,
+      "pointings": 278,
+      "observationDates": 78,
+      "independentEpochs": 57,
+      "preparedFrames": 3
+    },
+    "searchStatus": "OK",
+    "complete": true,
+    "warnings": [
+      "This example contains a selected, wavelength-matched subset of the archive index.",
+      "Matched near-infrared visits at a fixed catalog position. The sampling and pixel masks limit any variability conclusion."
+    ],
+    "collections": [
+      {
+        "collection": "spherex_dr1",
+        "release": "DR1",
+        "doi": "10.26131/IRSA678",
+        "complete": true,
+        "successful": true,
+        "rows": 419
+      },
+      {
+        "collection": "spherex_qr3",
+        "release": "QR3",
+        "doi": "10.26131/IRSA662",
+        "complete": true,
+        "successful": true,
+        "rows": 126
+      }
+    ],
+    "visitGrouping": "Consecutive pointings less than 24 hours apart",
+    "frames": [
+      {
+        "frameId": "4cff45316f3e8256e8068a5840c7fbef",
+        "productId": "level2_2025W23_2B_0206_1D1_spx_l2b-v27-2026-201",
+        "obsId": "2025W23_2B_0206_1",
+        "release": "DR1",
+        "detector": 1,
+        "startUtc": "2025-06-06T11:22:23.875Z",
+        "endUtc": "2025-06-06T11:24:18.993Z",
+        "slotKey": "2025-06-06",
+        "archiveUrl": "https://irsa.ipac.caltech.edu/ibe/data/spherex/dr1/level2/2025W23_2B/l2b-v27-2026-201/1/level2_2025W23_2B_0206_1D1_spx_l2b-v27-2026-201.fits",
+        "archiveDoi": "10.26131/IRSA678",
+        "state": "prepared",
+        "detectorWavelengthRangeUm": [
+          0.7455,
+          1.1167
+        ],
+        "estimatedDetectorXY": [
+          1203.9631694831912,
+          807.1284246263033
+        ],
+        "footprintMarginPx": 807.13,
+        "surveyTarget": "SPS_105008_S12",
+        "visitId": "fc97570363918bdba2814c2e2208ec61",
+        "wavelengthUm": 0.9432497620582581,
+        "bandwidthUm": 0.02416255697607994,
+        "midUtc": "2025-06-06T11:23:21.434Z",
+        "wavelengthCalibration": "cwave-cband",
+        "units": "MJy/sr",
+        "stretch": [
+          2.0275628566741943,
+          22.42806873321532
+        ],
+        "coverageFraction": 0.9845422116527943,
+        "validFraction": 0.7693222354340071,
+        "flags": [
+          "transient",
+          "overflow",
+          "sampling error",
+          "nonfunctional",
+          "persistence",
+          "bloom",
+          "halo"
+        ],
+        "warnings": [
+          "Some pixels are masked or outside the exposure.",
+          "Saturation or associated artifacts are present in the cutout."
+        ],
+        "processingVersion": "tan-bilinear-v1",
+        "psfFwhmArcsec": 7.530770327317724,
+        "transferBytes": 3977280,
+        "wavelengthCalibrationId": "spectral_wcs_D1_spx_cal-swcs-v5-2026-191.fits",
+        "imageUrl": "/presets/r-draconis/e4c69a628b1814b020e62e72.png",
+        "maskUrl": "/presets/r-draconis/e4c69a628b1814b020e62e72-mask.png"
+      },
+      {
+        "frameId": "f5854f64b5a78fc3ecc02c6ec1f27d7c",
+        "productId": "level2_2025W42_2A_0526_2D1_spx_l2b-v27-2026-243",
+        "obsId": "2025W42_2A_0526_2",
+        "release": "DR1",
+        "detector": 1,
+        "startUtc": "2025-10-19T00:57:25.434Z",
+        "endUtc": "2025-10-19T00:59:20.551Z",
+        "slotKey": "2025-10-19",
+        "archiveUrl": "https://irsa.ipac.caltech.edu/ibe/data/spherex/dr1/level2/2025W42_2A/l2b-v27-2026-243/1/level2_2025W42_2A_0526_2D1_spx_l2b-v27-2026-243.fits",
+        "archiveDoi": "10.26131/IRSA678",
+        "state": "prepared",
+        "detectorWavelengthRangeUm": [
+          0.7455,
+          1.1167
+        ],
+        "estimatedDetectorXY": [
+          181.3723747204865,
+          859.4485350564655
+        ],
+        "footprintMarginPx": 181.37,
+        "surveyTarget": "SPS_034025_S12",
+        "visitId": "5645b194f1ec3750abd9870580e63f34",
+        "wavelengthUm": 0.9412652254104614,
+        "bandwidthUm": 0.02459917962551117,
+        "midUtc": "2025-10-19T00:58:22.993Z",
+        "wavelengthCalibration": "cwave-cband",
+        "units": "MJy/sr",
+        "stretch": [
+          2.0275628566741943,
+          22.42806873321532
+        ],
+        "coverageFraction": 0.990487514863258,
+        "validFraction": 0.8335315101070154,
+        "flags": [
+          "transient",
+          "overflow",
+          "sampling error",
+          "nonfunctional",
+          "hot pixel",
+          "bloom",
+          "halo"
+        ],
+        "warnings": [
+          "Some pixels are masked or outside the exposure.",
+          "Saturation or associated artifacts are present in the cutout."
+        ],
+        "processingVersion": "tan-bilinear-v1",
+        "psfFwhmArcsec": 7.530770327317724,
+        "transferBytes": 3977280,
+        "wavelengthCalibrationId": "spectral_wcs_D1_spx_cal-swcs-v5-2026-191.fits",
+        "imageUrl": "/presets/r-draconis/bbbfcb51bd0502436f673bcb.png",
+        "maskUrl": "/presets/r-draconis/bbbfcb51bd0502436f673bcb-mask.png"
+      },
+      {
+        "frameId": "ae18bd344ff114a0dfe175042fe0b57c",
+        "productId": "level2_2026W28_2A_0376_3D1_spx_l2b-v27-2026-276",
+        "obsId": "2026W28_2A_0376_3",
+        "release": "QR3",
+        "detector": 1,
+        "startUtc": "2026-07-11T10:39:46.294Z",
+        "endUtc": "2026-07-11T10:41:41.412Z",
+        "slotKey": "2026-07-11",
+        "archiveUrl": "https://irsa.ipac.caltech.edu/ibe/data/spherex/qr3/level2/2026W28_2A/l2b-v27-2026-276/1/level2_2026W28_2A_0376_3D1_spx_l2b-v27-2026-276.fits",
+        "archiveDoi": "10.26131/IRSA662",
+        "state": "prepared",
+        "detectorWavelengthRangeUm": [
+          0.7455,
+          1.1167
+        ],
+        "estimatedDetectorXY": [
+          816.7949584936711,
+          820.4756494206076
+        ],
+        "footprintMarginPx": 816.79,
+        "surveyTarget": "SPS_105418_S34",
+        "visitId": "9d3b3b9ea6110facc9dddfb961fe4b49",
+        "wavelengthUm": 0.9408178925514221,
+        "bandwidthUm": 0.024380184710025787,
+        "midUtc": "2026-07-11T10:40:43.853Z",
+        "wavelengthCalibration": "cwave-cband",
+        "units": "MJy/sr",
+        "stretch": [
+          2.0275628566741943,
+          22.42806873321532
+        ],
+        "coverageFraction": 0.9797859690844233,
+        "validFraction": 0.8525564803804994,
+        "flags": [
+          "transient",
+          "overflow",
+          "sampling error",
+          "nonfunctional",
+          "bloom",
+          "halo"
+        ],
+        "warnings": [
+          "Some pixels are masked or outside the exposure.",
+          "Saturation or associated artifacts are present in the cutout."
+        ],
+        "processingVersion": "tan-bilinear-v1",
+        "psfFwhmArcsec": 7.530770327317724,
+        "transferBytes": 3977280,
+        "wavelengthCalibrationId": "spectral_wcs_D1_spx_cal-swcs-v5-2026-191.fits",
+        "imageUrl": "/presets/r-draconis/fc90508ca98b0983d7c2faed.png",
+        "maskUrl": "/presets/r-draconis/fc90508ca98b0983d7c2faed-mask.png"
+      }
+    ],
+    "seriesId": "preset-r-draconis",
+    "title": "R Draconis",
+    "baselineDays": 399.97039836805556,
+    "catalogReference": {
+      "id": "R Dra",
+      "source": "https://archive.aavso.org/index.php/aavso-bulletin-coordinates",
+      "epoch": "J2000",
+      "referenceRaDeg": 248.1676075,
+      "referenceDecDeg": 66.754984167,
+      "referenceEpoch": "J2000"
+    },
+    "presetSlug": "r-draconis",
+    "referenceStretch": [
+      2.0275628566741943,
+      22.42806873321532
+    ],
+    "fixtureSelection": "Independent matched cutouts",
+    "sourceReleases": [
+      "DR1",
+      "QR3"
+    ],
+    "downloadBytes": 7954560,
+    "generationSeconds": 19.53
+  },
+  "warnings": [
+    "This example contains a selected, wavelength-matched subset of the archive index.",
+    "Matched near-infrared visits at a fixed catalog position. The sampling and pixel masks limit any variability conclusion."
+  ]
+}

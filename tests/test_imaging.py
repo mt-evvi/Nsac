@@ -76,3 +76,42 @@ def test_cutouts_align_stationary_source_keep_moving_source_and_flip_png():
     with pytest.raises(Problem) as exc:
         process(fixture_cutout(query, 0, empty=True), query, entry, grid)
     assert exc.value.code == "LOW_OVERLAP"
+
+
+def test_coadd_weights_nearby_matched_exposures_and_drops_anchor_psf():
+    from server.imaging import coadd
+
+    query = dict(raDeg=1, decDeg=1, fovArcmin=3)
+    grid = grid_for(query)
+    dims = grid['height'], grid['width']
+    common = dict(visitId='night', detector=6, state='prepared', wavelengthUm=4.68, bandwidthUm=0.04,
+                  archiveUrl='https://example.invalid/fixture', imageUrl='/unused.png', stretch=[1, 7])
+    start = dict(common, frameId='a', productId='exposure-a', startUtc='2025-10-10T00:00:00.000Z',
+                 endUtc='2025-10-10T00:01:00.000Z', epsfModel={'zone':1})
+    followup = dict(common, frameId='b', productId='exposure-b', startUtc='2025-10-10T00:10:00.000Z',
+                    endUtc='2025-10-10T00:11:00.000Z')
+    late = dict(followup, frameId='late', productId='later', startUtc='2025-10-10T02:10:00.000Z')
+
+    class FixtureStore:
+        def prepared(self, series, frame):
+            return None
+
+        def load_arrays(self, series, frame):
+            assert frame['frameId'] != 'late'
+            first = frame['frameId'] == 'a'
+            valid = np.ones(dims, dtype=bool)
+            if not first:
+                valid[0, 0] = False
+            return {"image": np.full(dims, 2. if first else 4.), "variance": np.full(dims, 1. if first else 4.),
+                    "valid": valid, "coverage": np.ones(dims), "wavelength": np.full(dims, 4.68),
+                    "bandwidth": np.full(dims, 0.04), "effectivePsf": np.ones((9, 9)) / 81}
+
+    manifest = dict(seriesId='fixture', query=query, grid=grid, frames=[start, followup, late])
+    display, arrays, png, mask = coadd(manifest, start, FixtureStore(), 'coadd-id')
+    assert display['representation'] == 'coadd'
+    assert len(display['contributors']) == 2
+    assert 'epsfModel' not in display and 'effectivePsf' not in arrays
+    assert arrays['image'][18, 18] == pytest.approx(2.4)
+    assert arrays['variance'][18, 18] == pytest.approx(0.8)
+    assert np.isnan(arrays['image'][0, 0])
+    assert png and mask
