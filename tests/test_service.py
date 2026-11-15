@@ -290,7 +290,7 @@ def test_daily_release_inventory_retains_the_last_complete_snapshot(tmp_path, mo
 
     reject_listing = False
     monkeypatch.setattr(release_index, "fetch", fetch_listing)
-    service = Service(Settings(cache=tmp_path))
+    service = Service(Settings(cache=tmp_path, disk_reserve=0))
     try:
         release_index.schedule_if_due(service)
     finally:
