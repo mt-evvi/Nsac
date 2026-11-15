@@ -11,8 +11,9 @@ CacheDirectory=spherex-%i
 Environment=SPHEREX_CACHE=/var/cache/spherex-%i
 Environment=OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
 Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=SPHEREX_MONITOR=1
 EnvironmentFile=-/opt/nsac/slots/%i/release.env
-ExecStart=/opt/nsac/slots/%i/.venv/bin/python -m uvicorn server.app:app --host 127.0.0.1 --port %i --workers 1 --limit-concurrency 64 --timeout-keep-alive 5 --timeout-graceful-shutdown 15 --proxy-headers --forwarded-allow-ips 127.0.0.1
+ExecStart=/opt/nsac/slots/%i/.venv/bin/python -m uvicorn server.app:app --host 127.0.0.1 --port %i --workers 1 --limit-concurrency 64 --timeout-keep-alive 5 --timeout-graceful-shutdown 15 --proxy-headers --forwarded-allow-ips 127.0.0.1 --no-access-log
 Restart=on-failure
 NoNewPrivileges=yes
 ProtectSystem=strict

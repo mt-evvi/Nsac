@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 ROOT = Path(__file__).resolve().parents[1]
 MIB = 1024 * 1024
 GIB = 1024 * MIB
+BUNDLED_EXAMPLES = ("barnard", "epsilon-indi-b", "wise-0855", "wise-0855-nasa", "rw-aurigae", "r-draconis")
 
 
 class Settings(BaseModel):
@@ -17,6 +18,8 @@ class Settings(BaseModel):
     web: Path = Path(os.environ.get("SPHEREX_WEB", ROOT / "web" / "dist"))
     presets: Path = Path(os.environ.get("SPHEREX_PRESETS", ROOT / "presets"))
     release: str = os.environ.get("SPHEREX_RELEASE", "development")
+    refresh_releases: bool = os.environ.get("SPHEREX_REFRESH_RELEASES") == "1"
+    monitor: bool = os.environ.get("SPHEREX_MONITOR") == "1"
     job_workers: int = Field(default=2, ge=1, le=2)
     queue_limit: int = Field(default=8, ge=1, le=8)
     queue_seconds: int = Field(default=45, ge=1, le=45)

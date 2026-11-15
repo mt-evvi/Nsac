@@ -11,7 +11,7 @@ from typing import Callable
 
 from .contracts import Problem
 
-LOG = logging.getLogger(__name__)
+LOG = logging.getLogger("uvicorn.error.spherex.jobs")
 ACTIVE = {"queued", "running"}
 
 
@@ -44,6 +44,7 @@ class Jobs:
         self.by_session = {}
         self.rate = OrderedDict()
         self.running = set()
+        self.saturated = 0
         self.stopping = False
         self.timer = None
 
@@ -120,13 +121,16 @@ class Jobs:
             response = {"status": "failed", "error": Problem(
                 "PROCESSING_FAILED", "The requested data could not be processed.", 500, True
             ).payload()}
-        LOG.info("job=%s stage=%s outcome=%s seconds=%.3f", job.id, job.stage, response["status"],
-                 self.clock() - started)
         with self.lock:
             self._finish(job, response)
             self._pump()
+            running = len(self.running)
+            queued = sum(item.status == "queued" for item in self.by_id.values())
+        LOG.info("release=%s job=%s stage=%r outcome=%s reason=%s queued_seconds=%.3f work_seconds=%.3f active=%d queued=%d",
+                 self.settings.release, job.id, job.stage, response["status"], response.get("error", {}).get("code", "-"),
+                 started - job.enqueued, self.clock() - started, running, queued)
 
-    def submit(self, key, client, session, stage, work, *, extended=False, priority=1):
+    def submit(self, key, client, session, stage, work, *, extended=False, priority=1, admit=None):
         with self.lock:
             self._expire()
             existing = self.by_key.get(key)
@@ -140,7 +144,10 @@ class Jobs:
                 self._pump()
                 return existing.pending()
             if sum(job.status == "queued" for job in self.by_id.values()) >= self.settings.queue_limit:
+                self.saturated += 1
                 raise Problem("QUEUE_FULL", "The shared data queue is full. Try again shortly.", 503, True, 5)
+            if admit is not None:
+                admit()
             self._rate_limit(client, self.clock())
             job = Job("j" + secrets.token_urlsafe(15), key, work, stage, extended, priority, self.clock(), {session})
             self.by_id[job.id] = job
@@ -156,6 +163,13 @@ class Jobs:
             if job is None:
                 raise Problem("JOB_EXPIRED", "This job has expired. Submit the request again.", 404, True)
             return job.response if job.response is not None else job.pending()
+
+    def capacity_activity(self):
+        with self.lock:
+            activity = {"activeJobs": len(self.running), "queuedJobs": sum(job.status == "queued" for job in self.by_id.values()),
+                        "queueRejections": self.saturated}
+            self.saturated = 0
+            return activity
 
     def abandon(self, job_id, session):
         with self.lock:

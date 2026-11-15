@@ -12,6 +12,8 @@ from .workers import run_science
 
 router = APIRouter(prefix="/api/v1/series/{series_id}")
 ANALYSIS_VERSION = "v2"
+DETECTION_VERSION = "v4"
+TRACK_VERSION = "v3"
 SPECTRUM_VERSION = "v3"
 
 
@@ -20,12 +22,12 @@ def dataset(service, series_id, frame_id, grid):
     return {**arrays, "metadata": {**frame, "grid": grid}}
 
 
-def cached_job(request, service, key, stage, fn, *, extended=False, ttl=None):
+def cached_job(request, service, key, stage, fn, *, extended=False, ttl=None, decorate=None, transfer_kind=None):
     existing = service.store.get("analysis", key)
     if existing and (ttl is None or existing[1] < ttl):
         data = existing[0]
         if not data["data"].get("assetUrl") or service.store.public_asset(data["data"]["assetUrl"].rsplit("/", 1)[1]):
-            return data
+            return decorate(data) if decorate else data
 
     def work():
         from .analysis import AnalysisError
@@ -35,9 +37,13 @@ def cached_job(request, service, key, stage, fn, *, extended=False, ttl=None):
         except AnalysisError as exc:
             raise Problem(exc.code, exc.message, 409) from exc
         service.store.put("analysis", key, result)
-        return result
+        return decorate(result) if decorate else result
 
-    return service.schedule(request, key, stage, work, extended=extended)
+    return service.schedule(request, key, stage, work, extended=extended, transfer_kind=transfer_kind)
+
+
+def catalog_cache_key(grid, catalog):
+    return content_key(ANALYSIS_VERSION, "catalog", grid, catalog)
 
 
 @router.post("/comparisons")
@@ -72,19 +78,37 @@ def detections(series_id: ID, options: DetectionQuery, request: Request):
         if comparison_row is None:
             raise Problem("COMPARISON_EXPIRED", "Prepare the comparison again before detecting sources.", 404)
         ids = comparison_row[0]
-    for frame_id in ids:
-        service.frame(series_id, frame_id)
+    frame_metadata = {frame_id: service.frame(series_id, frame_id)[1] for frame_id in ids}
     region = options.region.model_dump() if options.region else None
-    key = content_key(ANALYSIS_VERSION, "detections", series_id, ids, region)
+    key = content_key(DETECTION_VERSION, "detections", series_id, ids, region)
 
     def work():
         frames = [dataset(service, series_id, frame_id, grid) for frame_id in ids]
         result = run_science("detect", 12, frames, region=region)
         for item in result["candidates"]:
             service.store.put("candidate", f"{series_id}:{item['candidateId']}", item)
-        return ready({**result, "analysisId": key}, result.get("warnings", []))
+        return ready({**result, "analysisId": key}, result.get("warnings", []), bool(result.get("partial")))
 
-    return cached_job(request, service, key, "measuring sources", work, extended=True)
+    def decorate(envelope):
+        from .catalogs import nearby_matches
+
+        data = envelope["data"]
+        if not data["candidates"]:
+            return envelope
+        catalogs = []
+        for catalog in ("gaia_dr3", "allwise"):
+            cached = service.store.get("catalog", catalog_cache_key(grid, catalog))
+            if cached and cached[1] < service.settings.catalog_ttl:
+                catalogs.append(cached[0])
+        if not catalogs:
+            return envelope
+        prepared = {frame_id: service.store.prepared(series_id, frame_id) or frame
+                    for frame_id, frame in frame_metadata.items()}
+        matches = nearby_matches(data["candidates"], catalogs, prepared, grid)
+        candidates = [{**item, "catalogMatches": matches[item["candidateId"]]} for item in data["candidates"]]
+        return {**envelope, "data": {**data, "candidates": candidates}}
+
+    return cached_job(request, service, key, "measuring sources", work, extended=True, decorate=decorate)
 
 
 def candidate(service, series_id, candidate_id):
@@ -103,7 +127,7 @@ def track(series_id: ID, options: TrackQuery, request: Request):
     ids = list(dict.fromkeys(mark["frameId"] for mark in marks))
     for frame_id in ids:
         service.frame(series_id, frame_id)
-    key = content_key(ANALYSIS_VERSION, "track", series_id, options.model_dump())
+    key = content_key(TRACK_VERSION, "track", series_id, options.model_dump())
 
     def work():
         frames = [dataset(service, series_id, frame_id, grid) for frame_id in ids]
@@ -121,7 +145,7 @@ def overlay(series_id: ID, options: OverlayQuery, request: Request):
     service = request.app.state.service
     grid = service.manifest(series_id)["data"]["grid"]
     frame = service.frame(series_id, options.frameId)[1] if options.frameId else None
-    key = content_key(ANALYSIS_VERSION, "catalog", grid, options.catalog)
+    key = catalog_cache_key(grid, options.catalog)
     cached = service.store.get("catalog", key)
 
     def render(rows):
@@ -136,7 +160,8 @@ def overlay(series_id: ID, options: OverlayQuery, request: Request):
         service.store.put("catalog", key, rows)
         return render(rows)
 
-    return service.schedule(request, f"{key}:{options.frameId or 'reference'}", "loading catalog positions", work)
+    return service.schedule(request, f"{key}:{options.frameId or 'reference'}", "loading catalog positions", work,
+                            transfer_kind="catalog")
 
 
 @router.post("/spectra")
@@ -146,11 +171,12 @@ def spectrum(series_id: ID, options: SpectrumQuery, request: Request):
     service = request.app.state.service
     manifest = service.manifest(series_id)["data"]
     linked = candidate(service, series_id, options.candidateId) if options.candidateId else None
-    key = content_key(SPECTRUM_VERSION, "spectrum", series_id, options.model_dump(mode="json"))
+    recipe = "coadded-cube-v1" if options.mode == "coadded_cube" else "spectrum"
+    key = content_key(SPECTRUM_VERSION, recipe, series_id, options.model_dump(mode="json"))
 
     def work():
         result = spectra.extract(manifest, options.model_dump(mode="json", exclude_none=True), linked, service.store)
         return ready(result, result.get("warnings", []), bool(result.get("partial")))
 
     return cached_job(request, service, key, "extracting spectrum", work, extended=True,
-                      ttl=service.settings.metadata_ttl)
+                      ttl=service.settings.metadata_ttl, transfer_kind="irsa")

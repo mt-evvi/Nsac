@@ -14,15 +14,31 @@ type Overlay = {
 }
 type Mark = {frameId: string; pixel: Pixel}
 type Source = Mark & {snr?: number; method?: string}
-type PinnedMark = Mark & {productId: string; sky: Sky}
-type Candidate = {candidateId: string; label: string; reason: string; marks: Source[]; score: number}
-type Detections = {candidates: Candidate[]; sources: {frameId: string; sources: Source[]}[]; warnings: string[]}
+type PinnedMark = Mark & {productId: string; sky: Sky; centroidPixel?: Pixel}
+type CatalogMatches = {
+  catalog: Catalog; radiusArcsec: number; ambiguous: boolean; truncated: boolean
+  matches: {
+    catalogId: string; separationArcsec: number; observationUtc: string; referenceEpoch: number | string | null
+    comparisonEpoch: string; properMotionApplied: boolean; matchedVisits: number
+  }[]
+}
+type Candidate = {candidateId: string; label: string; reason: string; marks: Source[]; score: number; catalogMatches?: CatalogMatches[]}
+type ResidualGroup = Sky & {
+  frameA: string; frameB: string; timeA: string; timeB: string
+  sign: 'positive' | 'negative'; pixel: Pixel; snr: number
+}
+type Detections = {
+  candidates: Candidate[]; sources: {frameId: string; sources: Source[]}[]; residualGroups?: ResidualGroup[]; warnings: string[]
+}
 type Forecast = {
   horizonDays: number; model: string; uncertainty: string
   samples: (Pixel & {timeUtc: string; ellipse95Arcsec: number})[]
 }
 type Track = {
-  measurements: (Mark & Sky & {timeUtc: string; productId?: string; sigmaArcsec: number; method: string})[]
+  measurements: (Mark & Sky & {
+    timeUtc: string; productId?: string; sigmaArcsec: number; method: string
+    originalPixel?: Pixel; covariancePx2?: number[][]
+  })[]
   baselineDays: number; separationArcsec: number; uncertaintyArcsec: number; positionAngleDeg: number | null
   rateArcsecPerDay: number; forecastReason: string; forecast: Forecast | null
 }
@@ -31,7 +47,7 @@ type SpectrumSample = {
   sampleStatus: 'measured' | 'missing'; reason?: string; channel?: number; productId?: string; bandwidthUm?: number
   detector?: number; visitId?: string
 }
-type Spectrum = {samples: SpectrumSample[]; mode: string; units: string; referenceUrl: string; warnings: string[]}
+type Spectrum = {samples: SpectrumSample[]; mode: string; units: string; referenceUrl: string; archiveDoi?: string; warnings: string[]}
 
 export type AnalysisApi = {
   manifest(): Manifest | undefined
@@ -98,6 +114,9 @@ const isSciencePoint = (value: unknown): value is Pixel => {
   const point = value as Pixel | undefined
   return Boolean(point && finite(point.x) && finite(point.y))
 }
+const insideGrid = (point: unknown, grid: Manifest['grid']): point is Pixel =>
+  isSciencePoint(point) && point.x >= 0 && point.x < grid.width && point.y >= 0 && point.y < grid.height
+const residualSign = (group: ResidualGroup) => group.sign === 'positive' ? 'Brighter in B (+)' : 'Fainter in B (−)'
 
 const radians = Math.PI / 180
 
@@ -167,6 +186,7 @@ export function installAnalysis(api: AnalysisApi) {
   const seenFrames = new Map<string, Frame>()
   const marks = new Map<Pane, PinnedMark>()
   let preview: Source[] = []
+  let highlightedResidual: ResidualGroup | undefined
   let selectedCandidate: Candidate | undefined
   let tracked: Track | undefined
   let point: (Pixel & Sky) | undefined
@@ -199,7 +219,7 @@ export function installAnalysis(api: AnalysisApi) {
     }
   }
   function pipelineVersion() {
-    return (api.manifest() as (Manifest & {pipelineVersion?: string}) | undefined)?.pipelineVersion
+    return api.manifest()?.pipelineVersion
   }
   function path(endpoint: string) {
     return '/api/v1/series/' + encodeURIComponent(api.manifest()!.seriesId) + '/' + endpoint
@@ -397,30 +417,31 @@ export function installAnalysis(api: AnalysisApi) {
   }
 
   function updateShare() {
-    const picked = [...marks.values()].map(mark => ({productId: mark.productId, sky: mark.sky, pixel: mark.pixel}))
-    api.shareMarks(includeMarks.checked && picked.length && api.manifest() ? JSON.stringify({
-      pipelineVersion: pipelineVersion(), marks: picked,
+    api.shareMarks(includeMarks.checked && marks.size && api.manifest() ? JSON.stringify({
+      pipelineVersion: pipelineVersion(), marks: [...marks.values()],
     }) : undefined)
   }
 
   function restoreShare() {
     if (!pendingShare) return
     try {
-      const pinned = JSON.parse(pendingShare) as {pipelineVersion: string; marks: Omit<PinnedMark, 'frameId'>[]}
+      const pinned = JSON.parse(pendingShare) as {pipelineVersion: string; marks: (Omit<PinnedMark, 'frameId'> & {frameId?: string})[]}
       if ((pinned.pipelineVersion && pinned.pipelineVersion !== pipelineVersion()) || !Array.isArray(pinned.marks) || pinned.marks.length > 2) {
         throw new Error('Unsupported marker version')
       }
       const remaining = []
       const grid = api.manifest()!.grid
       for (const pin of pinned.marks) {
-        if (!pin || typeof pin.productId !== 'string' || !isSciencePoint(pin.pixel)
-            || pin.pixel.x < 0 || pin.pixel.x >= grid.width || pin.pixel.y < 0 || pin.pixel.y >= grid.height) {
+        const exactFrame = typeof pin?.frameId === 'string' && /^[\w-]{1,80}$/.test(pin.frameId)
+        if (!pin || typeof pin.productId !== 'string' || (pin.frameId !== undefined && !exactFrame) || !insideGrid(pin.pixel, grid)
+            || (pin.centroidPixel !== undefined && (!exactFrame || !pinned.pipelineVersion || !insideGrid(pin.centroidPixel, grid)))) {
           throw new Error('Invalid marker')
         }
-        const match = panes().find(([, frame]) => frame?.productId === pin.productId)
+        const match = panes().find(([, frame]) => frame && frame.productId === pin.productId && (!pin.frameId || frame.frameId === pin.frameId))
         if (match) {
           const [pane, frame] = match
-          marks.set(pane, {frameId: frame!.frameId, productId: pin.productId, sky: pixelToSky(grid, pin.pixel), pixel: pin.pixel})
+          marks.set(pane, {frameId: frame!.frameId, productId: pin.productId, sky: pixelToSky(grid, pin.pixel),
+            pixel: pin.pixel, centroidPixel: pin.centroidPixel})
           includeMarks.checked = true
         } else remaining.push(pin)
       }
@@ -444,7 +465,7 @@ export function installAnalysis(api: AnalysisApi) {
     trackResults.replaceChildren()
   }
 
-  function renderTrack(result: Track) {
+  function renderTrack(result: Track, selectedMarks: PinnedMark[] = []) {
     tracked = result
     trackResults.replaceChildren()
     const summary = node('dl')
@@ -457,10 +478,43 @@ export function installAnalysis(api: AnalysisApi) {
     trackResults.append(summary)
     const measurementList = node('ul')
     for (const measure of result.measurements) {
-      measurementList.append(node('li', `${measure.timeUtc} · ${measure.raDeg.toFixed(6)}°, ${measure.decDeg.toFixed(6)}° · ${measure.method} · ${measure.productId ?? ''}`))
+      const entry = node('li', `${measure.timeUtc} · ${measure.raDeg.toFixed(6)}°, ${measure.decDeg.toFixed(6)}° · ${measure.method} · ${measure.productId ?? measure.frameId}`)
+      entry.append(node('p', `Position uncertainty ${format(measure.sigmaArcsec)}″`))
+      if (measure.originalPixel) {
+        const coordinates = (pixel: Pixel) => `(${format(pixel.x, 6)}, ${format(pixel.y, 6)})`
+        entry.append(node('p', `Original mark ${coordinates(measure.originalPixel)} · Measured centroid ${coordinates(measure.pixel)} · Image pixels`))
+      }
+      if (measure.covariancePx2) {
+        const matrix = measure.covariancePx2.map(row => `[${row.map(value => format(value, 4)).join(', ')}]`).join(' ')
+        entry.append(node('p', `Centroid covariance ${matrix} px²`))
+      }
+      measurementList.append(entry)
+    }
+    const download = action('Download measurements')
+    download.onclick = () => {
+      const manifest = api.manifest()
+      if (!manifest) return
+      const sourceFrames = result.measurements.map(measurement => {
+        const frame = seenFrames.get(measurement.frameId) ?? manifest.frames.find(frame => frame.frameId === measurement.frameId)
+        return {
+          frameId: measurement.frameId, productId: measurement.productId ?? frame?.productId,
+          archiveUrl: frame?.archiveUrl, archiveDoi: frame?.archiveDoi, release: frame?.release,
+        }
+      })
+      const payload = {
+        schemaVersion: 1, pipelineVersion: pipelineVersion(), seriesId: manifest.seriesId,
+        dataCredit: 'NASA SPHEREx mission · NASA/IPAC Infrared Science Archive',
+        query: manifest.query, grid: manifest.grid, sourceFrames, marks: selectedMarks, ...result,
+      }
+      const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], {type: 'application/json'}))
+      const file = node('a')
+      file.href = url
+      file.download = 'spherex-measurements.json'
+      file.click()
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000)
     }
     const observations = node('details')
-    observations.append(node('summary', 'Measurement coordinates & provenance'), measurementList)
+    observations.append(node('summary', 'Measurement coordinates & provenance'), measurementList, download)
     trackResults.append(observations)
     if (result.forecast) {
       forecastLabel.hidden = false
@@ -500,12 +554,13 @@ export function installAnalysis(api: AnalysisApi) {
 
   measure.onclick = () => {
     if (api.shown()?.visitId === api.paired()?.visitId) return
-    const selected = [...marks.values()].map(({frameId, pixel}) => ({frameId, pixel}))
+    const selected = [...marks.values()]
     if (selected.length !== 2) return
     void run(trackStatus, 'Measuring angular separation…', async signal => {
-      const {data} = await api.data<Track>(path('tracks'), signal, {marks: selected}, false)
-      if (signal.aborted) return
-      renderTrack(data)
+      const requestMarks = selected.map(({frameId, pixel, centroidPixel}) => ({frameId, pixel, centroidPixel}))
+      const {data} = await api.data<Track>(path('tracks'), signal, {marks: requestMarks}, false)
+      if (signal.aborted || selected.some(mark => ![...marks.values()].includes(mark))) return
+      renderTrack(data, selected)
       motionLabel.hidden = false
       trackStatus.textContent = ''
     })
@@ -593,9 +648,11 @@ export function installAnalysis(api: AnalysisApi) {
   function applySource(source: Source, pane: Pane) {
     const frame = frameFor(pane)
     const grid = api.manifest()?.grid
-    if (!frame || !grid) return
+    if (!frame || source.frameId !== frame.frameId || !grid || !insideGrid(source.pixel, grid)) return
+    const previous = marks.get(pane)
+    const pixel = previous?.frameId === frame.frameId ? previous.pixel : source.pixel
     marks.set(pane, {
-      frameId: source.frameId, pixel: source.pixel, sky: pixelToSky(grid, source.pixel), productId: frame.productId,
+      frameId: frame.frameId, pixel, sky: pixelToSky(grid, pixel), productId: frame.productId, centroidPixel: source.pixel,
     })
     clearTrack()
     trackStatus.textContent = `Mark ${pane.toUpperCase()} snapped to the detected centroid.`
@@ -607,11 +664,42 @@ export function installAnalysis(api: AnalysisApi) {
   function renderCandidates(result: Detections, warnings: string[]) {
     candidateList.replaceChildren()
     preview = []
+    highlightedResidual = undefined
     selectedCandidate = undefined
     clearTrack()
     const info = [...distinctWarnings(result.warnings ?? [], warnings)]
-    if (!result.candidates.length) candidateList.append(node('p', 'No ranked change candidate passed the quality gate.'))
+    if (!result.candidates.length) candidateList.append(node('p', 'No linked change candidate passed the quality gate.'))
     for (const warning of info) candidateList.append(node('p', warning))
+    const groups = result.residualGroups ?? []
+    if (groups.length) {
+      const details = node('details')
+      const list = node('ol')
+      details.append(node('summary', `Single-pair residuals · ${groups.length}`),
+        node('p', 'Provisional changes from one aligned pair. The signal-to-noise values are approximate.'), list)
+      let pressed: HTMLButtonElement | undefined
+      for (const group of groups.slice(0, 8)) {
+        const item = node('li')
+        const highlight = action('Highlight residual')
+        highlight.setAttribute('aria-pressed', 'false')
+        highlight.disabled = !panes().some(([, frame]) => frame && (frame.frameId === group.frameA || frame.frameId === group.frameB))
+        highlight.onclick = () => {
+          pressed?.setAttribute('aria-pressed', 'false')
+          highlightedResidual = highlightedResidual === group ? undefined : group
+          pressed = highlightedResidual ? highlight : undefined
+          pressed?.setAttribute('aria-pressed', 'true')
+          api.redraw()
+        }
+        item.append(
+          node('p', `${residualSign(group)} · S/N ${format(Math.abs(group.snr))}`),
+          node('p', `A ${group.timeA} · B ${group.timeB}`),
+          node('p', `ICRS ${group.raDeg.toFixed(6)}°, ${group.decDeg.toFixed(6)}° · Pixel (${format(group.pixel.x, 5)}, ${format(group.pixel.y, 5)})`),
+          highlight,
+        )
+        list.append(item)
+      }
+      if (groups.length > 8) details.append(node('p', `Showing the strongest 8 of ${groups.length} residuals.`))
+      candidateList.append(details)
+    }
     for (const [index, candidate] of result.candidates.slice(0, 8).entries()) {
       const item = node('details')
       const focus = action('Highlight in the field')
@@ -645,6 +733,25 @@ export function installAnalysis(api: AnalysisApi) {
       }
       item.append(node('summary', `${index + 1}. ${candidate.label} · score ${format(candidate.score)}`), node('p', candidate.reason),
         actions(focus, model, dismiss))
+      for (const nearby of candidate.catalogMatches ?? []) {
+        const title = catalogLabels[nearby.catalog]
+        if (!nearby.matches.length) {
+          const coverage = nearby.truncated ? ' in the truncated catalog results' : ''
+          item.append(node('p', `${title} · No position within ${format(nearby.radiusArcsec)}″${coverage}.`))
+          continue
+        }
+        const qualifiers = [nearby.ambiguous && 'multiple possible matches', nearby.truncated && 'truncated results'].filter(Boolean)
+        item.append(node('p', `${title} proximity only${qualifiers.length ? ` · ${qualifiers.join(' · ')}` : ''}`))
+        const list = node('ul')
+        for (const match of nearby.matches) {
+          const reference = typeof match.referenceEpoch === 'number' ? `J${match.referenceEpoch.toFixed(1)}` : match.referenceEpoch ?? 'epoch unspecified'
+          const epoch = nearby.catalog === 'allwise' ? match.comparisonEpoch
+            : match.properMotionApplied ? `propagated from ${reference}` : reference
+          const visits = match.matchedVisits === 1 ? '1 visit' : `${match.matchedVisits} visits`
+          list.append(node('li', `${match.catalogId} · ${format(match.separationArcsec)}″ on ${match.observationUtc.slice(0, 10)} UTC · ${epoch} · ${visits}`))
+        }
+        item.append(list)
+      }
       for (const [pane, frame] of panes()) {
         const match = candidate.marks.find(mark => mark.frameId === frame?.frameId)
         if (!match) continue
@@ -681,7 +788,8 @@ export function installAnalysis(api: AnalysisApi) {
       const response = await api.data<Detections>(path('detections'), signal, {frameIds: ordered.map(frame => frame.frameId)}, false)
       if (signal.aborted) return
       renderCandidates(response.data, response.warnings)
-      trackStatus.textContent = `${response.data.candidates.length} ranked candidates`
+      const residualCount = response.data.residualGroups?.length ?? 0
+      trackStatus.textContent = `${response.data.candidates.length} linked candidates${residualCount ? ` · ${residualCount} signed residuals` : ''}`
     })
   }
 
@@ -803,6 +911,9 @@ export function installAnalysis(api: AnalysisApi) {
     const details = node('details')
     details.append(node('summary', `Spectral samples (${samples.length})`), table)
     spectrumOutput.append(details, link('IRSA spectrum reference ↗', spectrum.referenceUrl))
+    if (spectrum.archiveDoi && /^10\.26131\/IRSA\d+$/.test(spectrum.archiveDoi)) {
+      spectrumOutput.append(link('Spectral product DOI ↗', `https://doi.org/${spectrum.archiveDoi}`))
+    }
   }
 
   function updateControls() {
@@ -849,9 +960,21 @@ export function installAnalysis(api: AnalysisApi) {
         }
       }
       const placed = marks.get(pane)
-      if (placed?.frameId === frame.frameId) api.mark(pane, placed.pixel.x, placed.pixel.y, 'analysis-mark', `Marker ${pane.toUpperCase()}`)
+      if (placed?.frameId === frame.frameId) {
+        const {pixel, centroidPixel} = placed
+        if (centroidPixel && (centroidPixel.x !== pixel.x || centroidPixel.y !== pixel.y)) {
+          api.mark(pane, pixel.x, pixel.y, 'analysis-cursor', `Original mark ${pane.toUpperCase()}`)
+        }
+        const position = centroidPixel ?? pixel
+        const kind = centroidPixel ? 'Snapped centroid' : 'Mark'
+        api.mark(pane, position.x, position.y, 'analysis-mark', `${kind} ${pane.toUpperCase()}`)
+      }
       for (const source of preview) {
         if (source.frameId === frame.frameId) api.mark(pane, source.pixel.x, source.pixel.y, 'analysis-candidate', selectedCandidate?.label)
+      }
+      if (highlightedResidual && (frame.frameId === highlightedResidual.frameA || frame.frameId === highlightedResidual.frameB)) {
+        const {x, y} = highlightedResidual.pixel
+        api.mark(pane, x, y, 'analysis-candidate', `Provisional residual · ${residualSign(highlightedResidual)}`)
       }
       const keyboardCursor = armed === pane || (armed === 'spectrum' && pane === 'a')
       if (cursor && keyboardCursor) api.mark(pane, cursor.x, cursor.y, 'analysis-cursor', 'Mark cursor')
@@ -899,6 +1022,7 @@ export function installAnalysis(api: AnalysisApi) {
       spectrumOutput.replaceChildren()
       trackStatus.textContent = coaddCaption.textContent = catalogStatus.textContent = spectrumStatus.textContent = visitStatus.textContent = ''
       preview = []
+      highlightedResidual = undefined
       selectedCandidate = undefined
       point = undefined
       clearTrack()
@@ -915,6 +1039,7 @@ export function installAnalysis(api: AnalysisApi) {
       candidateList.replaceChildren()
       selectedCandidate = undefined
       preview = []
+      highlightedResidual = undefined
       refreshSpectrumTarget()
     }
     for (const [pane, frame] of panes()) {

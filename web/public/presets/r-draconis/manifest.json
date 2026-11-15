@@ -71,6 +71,7 @@
     "frames": [
       {
         "frameId": "4cff45316f3e8256e8068a5840c7fbef",
+        "surveyPass": "Survey 2",
         "productId": "level2_2025W23_2B_0206_1D1_spx_l2b-v27-2026-201",
         "obsId": "2025W23_2B_0206_1",
         "release": "DR1",
@@ -125,6 +126,7 @@
       },
       {
         "frameId": "f5854f64b5a78fc3ecc02c6ec1f27d7c",
+        "surveyPass": "Survey 1",
         "productId": "level2_2025W42_2A_0526_2D1_spx_l2b-v27-2026-243",
         "obsId": "2025W42_2A_0526_2",
         "release": "DR1",
@@ -179,6 +181,7 @@
       },
       {
         "frameId": "ae18bd344ff114a0dfe175042fe0b57c",
+        "surveyPass": "Survey 4",
         "productId": "level2_2026W28_2A_0376_3D1_spx_l2b-v27-2026-276",
         "obsId": "2026W28_2A_0376_3",
         "release": "QR3",

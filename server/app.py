@@ -1,9 +1,11 @@
 """Same-origin browser shell, archive jobs, and immutable display assets."""
 
+import asyncio
 import re
 import secrets
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
+from functools import partial
 
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -12,10 +14,13 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException
 
 from .analysis_api import router as analysis_router
-from .config import SETTINGS
+from .config import MIB, SETTINGS
 from .contracts import ID, JOB_ID, FrameOptions, Problem, SeriesQuery, ready
 from .jobs import Jobs
+from .release_index import schedule_if_due
 from .store import Store, content_key
+from .telemetry import RequestTraffic, Telemetry
+from .upstream import check_admission
 
 ASSET_NAME = re.compile(r"[a-f0-9]{32}\.png\Z")
 SESSION_TOKEN = re.compile(r"[A-Za-z0-9_-]{24}\Z")
@@ -80,13 +85,15 @@ class Service:
         self.store = Store(settings)
         self.jobs = Jobs(settings)
         self.cursor_secret = secrets.token_hex(32)
+        self.bundle_bytes = self.store.example_bundle()
 
-    def schedule(self, request, key, stage, work, *, detached=False, **options):
+    def schedule(self, request, key, stage, work, *, detached=False, transfer_kind=None, **options):
         self.store.check_capacity()
         client = request.client.host if request.client else "local"
         session, new = session_info(request)
         requester = f"refresh-{key}" if detached else session
-        job = self.jobs.submit(key, client, requester, stage, work, **options)
+        admit = partial(check_admission, transfer_kind) if transfer_kind else None
+        job = self.jobs.submit(key, client, requester, stage, work, admit=admit, **options)
         response = JSONResponse(job, status_code=202, headers={"Cache-Control": "no-store"})
         if new and not detached:
             session_cookie(request, response, session)
@@ -132,16 +139,33 @@ class Service:
 
 
 def create_app(settings=SETTINGS):
+    async def refresh_release_inventory(service):
+        while True:
+            with suppress(Problem):
+                schedule_if_due(service)
+            await asyncio.sleep(60)
+
     @asynccontextmanager
     async def lifespan(app):
         app.state.service = Service(settings)
+        tasks = []
+        if settings.refresh_releases:
+            tasks.append(asyncio.create_task(refresh_release_inventory(app.state.service)))
+        if settings.monitor:
+            app.state.telemetry = Telemetry(app.state.service)
+            tasks.append(asyncio.create_task(app.state.telemetry.run()))
         try:
             yield
         finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
             app.state.service.jobs.close()
 
     app = FastAPI(title="Planet X and SPHEREx", version="1", lifespan=lifespan)
     app.add_middleware(RequestBounds, limit=settings.body_limit)
+    if settings.monitor:
+        app.add_middleware(RequestTraffic)
 
     @app.exception_handler(Problem)
     async def handle_problem(_request, exc):
@@ -173,10 +197,14 @@ def create_app(settings=SETTINGS):
 
         service = request.app.state.service
         static = (settings.web / "index.html").is_file()
-        database = service.store.db.is_file()
-        status = "ready" if static and database else "unavailable"
+        database = service.store.cache_available()
+        bundles = service.bundle_bytes is not None and service.bundle_bytes <= 100 * MIB
+        release_index = service.store.get("release-index", "attempt") if settings.refresh_releases and database else None
+        status = "ready" if static and bundles and database else "unavailable"
         return JSONResponse({"status": status, "release": settings.release, "schemaVersion": 1,
-                             "static": static, "cache": database, "archive": upstream.LAST_PROBE}, status_code=200 if status == "ready" else 503)
+                             "static": static, "presets": bundles, "cache": database, "archive": upstream.LAST_PROBE,
+                             "archiveDiscovery": upstream.LAST_DISCOVERY_PROBE,
+                             "releaseIndex": release_index[0] if release_index else None}, status_code=200 if status == "ready" else 503)
 
     @app.post("/api/v1/series")
     def discover(query: SeriesQuery, request: Request):
@@ -212,7 +240,8 @@ def create_app(settings=SETTINGS):
 
         has_stale = row is not None and not no_coverage and age <= settings.stale_ttl
         try:
-            response = service.schedule(request, series_id, "discovering archive observations", work, detached=has_stale)
+            response = service.schedule(request, series_id, "discovering archive observations", work, detached=has_stale,
+                                        transfer_kind="irsa")
         except Problem:
             if not has_stale:
                 raise
@@ -251,8 +280,9 @@ def create_app(settings=SETTINGS):
         manifest, candidate = service.frame(series_id, frame_id)
         options = options or FrameOptions()
         mode = options.representation
-        result_id = frame_id if mode == "exposure" else content_key("coadd", frame_id)
-        cached = service.store.prepared(series_id, result_id)
+        result_id = frame_id if mode == "exposure" else content_key("coadd-v2", frame_id)
+        variant = service.store.get("coadd-variant", f"{series_id}:{result_id}") if mode == "coadd" else None
+        cached = service.store.prepared(series_id, variant[0] if variant else result_id)
         if cached:
             return ready(cached)
         if mode == "exposure" and candidate.get("imageUrl"):
@@ -277,9 +307,12 @@ def create_app(settings=SETTINGS):
                         info["stretch"], png, mask = imaging.render_frame(arrays, shared)
                 frame = {**candidate, **info, "frameId": frame_id}
             frame = service.store.save_frame(series_id, frame, arrays, png, mask)
+            if mode == "coadd":
+                service.store.put("coadd-variant", f"{series_id}:{result_id}", frame["frameId"])
             return ready(frame, frame.get("warnings", []))
 
         return service.schedule(request, f"{series_id}:{result_id}", "fetching and aligning the frame", work,
+                                transfer_kind="irsa" if mode == "exposure" else None,
                                 priority=2 if options.priority == "prefetch" else 0)
 
     @app.get("/api/v1/jobs/{job_id}")

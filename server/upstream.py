@@ -14,14 +14,17 @@ from .contracts import Problem
 
 IRSA = "irsa.ipac.caltech.edu"
 GAIA = "gea.esac.esa.int"
+GAVO = "dc.g-vo.org"
 IRSA_CLOUD = "nasa-irsa-spherex.s3.amazonaws.com"
 PATHS = {
     "metadata": {IRSA: re.compile(r"/SIA/?")},
     "cutout": {IRSA: re.compile(r"/ibe/data/spherex/(?:dr1|qr3)/level2/[A-Za-z0-9_./-]+\.fits(?:\.gz)?")},
-    "catalog": {IRSA: re.compile(r"/(?:TAP/sync|cgi-bin/Gator/nph-query)"), GAIA: re.compile(r"/tap-server/tap/sync")},
+    "catalog": {IRSA: re.compile(r"/(?:TAP/sync|cgi-bin/Gator/nph-query)"), GAIA: re.compile(r"/tap-server/tap/sync"),
+                GAVO: re.compile(r"/tap/sync")},
     "calibration": {IRSA_CLOUD: re.compile(
         r"/(?:dr1|qr3)/(?:spectral_wcs|solid_angle_pixel_map)/cal-(?:swcs|sapm)-v[0-9]+-[0-9]{4}-[0-9]{3}/[1-6]/[a-zA-Z0-9_-]+\.fits")},
     "cube": {IRSA_CLOUD: re.compile(r"/dr1/hips5_cube/hips_20261026/Norder5/Dir(?:0|10000)/Npix[0-9]{1,5}_cube\.fits")},
+    "release-index": {IRSA_CLOUD: re.compile(r"/")},
 }
 SEMAPHORES = {"irsa": threading.BoundedSemaphore(2), "catalog": threading.BoundedSemaphore(1)}
 FAILURES = []
@@ -29,10 +32,15 @@ HEALTH_LOCK = threading.Lock()
 CIRCUIT_UNTIL = 0.0
 HALF_OPEN = False
 LAST_PROBE = None
+LAST_DISCOVERY_PROBE = None
 
 
 class UpstreamError(Problem):
     pass
+
+
+def daily_budget_error():
+    return UpstreamError("DAILY_BUDGET", "The upstream transfer allowance is exhausted. Try again later.", 429, True, 60)
 
 
 class TransferBudget:
@@ -77,7 +85,15 @@ class RollingTransfers:
                              (kind, minute, count))
             conn.commit()
             if prior >= self.ceiling[kind] or prior + count > self.ceiling[kind]:
-                raise UpstreamError("DAILY_BUDGET", "The upstream transfer allowance is exhausted. Try again later.", 429, True, 60)
+                raise daily_budget_error()
+
+    def recent_bytes(self):
+        if not self.path.is_file():
+            return dict.fromkeys(self.ceiling, 0)
+        with closing(sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)) as conn:
+            totals = dict(conn.execute("SELECT kind,SUM(bytes) FROM transfers WHERE minute >= ? GROUP BY kind",
+                                       (int(time.time() / 60) - 1440,)))
+        return {kind: totals.get(kind, 0) for kind in self.ceiling}
 
 
 TRANSFERS = RollingTransfers(SETTINGS)
@@ -103,6 +119,15 @@ def check_url(url, purpose):
                 raise ValueError
         except ValueError as exc:
             raise UpstreamError("UNSAFE_PRODUCT", "The image request must include a bounded sky cutout.") from exc
+    if purpose == "release-index":
+        try:
+            params = parse_qs(parts.query, keep_blank_values=True, strict_parsing=True, max_num_fields=4)
+            prefix, = params.pop("prefix")
+            if (params != {"list-type": ["2"], "delimiter": ["/"], "max-keys": ["256"]}
+                    or not re.fullmatch(r"(?:(?:dr|qr)[0-9]+/level2/)?", prefix)):
+                raise ValueError
+        except (KeyError, ValueError) as exc:
+            raise UpstreamError("UNSAFE_PRODUCT", "The release index requires a bounded directory listing.") from exc
     return parts
 
 
@@ -113,23 +138,44 @@ def seconds_left(deadline):
     return remaining
 
 
+def _check_circuit(now):
+    if CIRCUIT_UNTIL > now or HALF_OPEN:
+        raise UpstreamError("CIRCUIT_OPEN", "The archive is temporarily unavailable. Cached examples are still available.",
+                            503, True, max(1, int(CIRCUIT_UNTIL - now + 1)))
+
+
+def check_admission(kind):
+    """Reject new transfer-dependent work without reserving the recovery probe."""
+    if kind == "irsa":
+        with HEALTH_LOCK:
+            _check_circuit(time.monotonic())
+    try:
+        used = TRANSFERS.recent_bytes()[kind]
+    except (OSError, sqlite3.Error) as exc:
+        raise UpstreamError("TRANSFER_ACCOUNTING_UNAVAILABLE", "Transfer accounting is temporarily unavailable.", 503, True, 5) from exc
+    if used >= TRANSFERS.ceiling[kind]:
+        raise daily_budget_error()
+
+
 def allow_probe():
     global HALF_OPEN
     with HEALTH_LOCK:
-        now = time.monotonic()
-        if CIRCUIT_UNTIL > now or HALF_OPEN:
-            raise UpstreamError("CIRCUIT_OPEN", "The archive is temporarily unavailable. Cached examples are still available.",
-                                503, True, max(1, int(CIRCUIT_UNTIL - now + 1)))
+        _check_circuit(time.monotonic())
         probe = bool(CIRCUIT_UNTIL)
         HALF_OPEN = probe
         return probe
 
 
-def record_probe(probe, failure):
-    global CIRCUIT_UNTIL, HALF_OPEN, LAST_PROBE
+def record_probe(probe, failure, purpose):
+    global CIRCUIT_UNTIL, HALF_OPEN, LAST_PROBE, LAST_DISCOVERY_PROBE
     with HEALTH_LOCK:
         now = time.monotonic()
-        LAST_PROBE = {"checkedAtUnix": int(time.time()), "status": "degraded" if failure else "reachable"}
+        if failure is None:
+            HALF_OPEN = False
+            return
+        LAST_PROBE = {"checkedAtUnix": int(time.time()), "status": "degraded" if failure else "reachable", "purpose": purpose}
+        if purpose == "metadata":
+            LAST_DISCOVERY_PROBE = LAST_PROBE
         if failure:
             FAILURES[:] = [t for t in FAILURES if now - t < 60]
             FAILURES.append(now)
@@ -163,7 +209,8 @@ def fetch(url, *, limit, deadline, purpose, budget=None, byte_range=None, sessio
 
 
 def _fetch(url, limit, deadline, purpose, category, budget, byte_range, session):
-    probe = allow_probe() if category == "irsa" else False
+    tracks_archive_health = category == "irsa" and purpose != "release-index"
+    probe = allow_probe() if tracks_archive_health else False
     failure = False
     completed = False
     try:
@@ -229,5 +276,5 @@ def _fetch(url, limit, deadline, purpose, category, budget, byte_range, session)
         failure = exc.code in {"UPSTREAM_UNAVAILABLE", "ARCHIVE_TIMEOUT"} and exc.retryable
         raise
     finally:
-        if category == "irsa" and (completed or failure or probe):
-            record_probe(probe, failure)
+        if tracks_archive_health and (completed or failure or probe):
+            record_probe(probe, failure if completed or failure else None, purpose)

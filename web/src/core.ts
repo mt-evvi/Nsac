@@ -6,9 +6,9 @@ const appBase = staticOnly ? import.meta.env.BASE_URL : '/'
 
 export type Frame = {
   frameId: string; productId: string; obsId: string; slotKey: string; startUtc: string; endUtc: string
-  visitId: string; surveyPass?: string; release: string; detector: number; archiveUrl: string
+  visitId: string; surveyPass?: string | number; release: string; detector: number; archiveUrl: string
   imageUrl?: string; archiveDoi?: string; wavelengthUm?: number; bandwidthUm?: number; coverageFraction?: number; validFraction?: number
-  flags?: string[]; warnings?: string[]; stretch?: number[]; representation?: string
+  flags?: string[]; warnings?: string[]; stretch?: number[]; representation?: string; coaddAnchor?: string
 }
 export type Query = { raDeg: number; decDeg: number; fovArcmin: number; start?: string; end?: string; wavelengthUm?: number; detector?: number }
 export type Manifest = { seriesId: string; pipelineVersion?: string; query: Query; grid: {width: number; height: number; crpix: number[]; crval: number[]; cd: number[][]}; frames: Frame[]; count?: number; nextCursor?: string; counts: Record<string, number>; searchStatus: string }
@@ -36,8 +36,8 @@ let slots: Frame[][] = []
 let shown: Frame | undefined
 let paired: Frame | undefined
 let viewMode = 'single'
-let rendered: HTMLImageElement | undefined
-let renderedPair: HTMLImageElement | undefined
+let rendered: ImageBitmap | undefined
+let renderedPair: ImageBitmap | undefined
 let request = new AbortController()
 let frameRequest = new AbortController()
 let queryId = 0
@@ -47,13 +47,20 @@ let timekeeper = 0
 let debounce = 0
 let zoom = 1
 let pan = [0, 0]
-let comparisonAsset: HTMLImageElement | undefined
+let comparisonAsset: ImageBitmap | undefined
 let blinkB = false
 let blinkTimer = 0
 let lastWarnings: string[] = []
 const failures = new Map<string, string>()
 const prepared = new Map<string, Frame>()
-const raster = new Map<string, HTMLImageElement>()
+const raster = new Map<string, ImageBitmap>()
+type RasterLoad = {controller: AbortController; promise: Promise<ImageBitmap>; consumers: number}
+const rasterLoads = new Map<string, RasterLoad>()
+const transfers = new Set<Promise<void>>()
+const transferLimit = 3
+const variantLimit = 8
+const encodedRasterLimit = 256 * 1024
+const rasterSideLimit = 128
 
 class ServiceError extends Error {
   constructor(message: string, readonly code = '', readonly wait = 1) { super(message) }
@@ -78,6 +85,26 @@ function sameOrigin(path: string, prefix: string) {
   if (url.origin !== location.origin || !url.pathname.startsWith(prefix)) throw new Error('The viewer received an invalid asset URL.')
   return url.pathname + url.search
 }
+function waitFor<T>(promise: Promise<T>, signal?: AbortSignal) {
+  if (!signal) return promise
+  return new Promise<T>((resolve, reject) => {
+    const stop = () => { signal.removeEventListener('abort', stop); reject(signal.reason) }
+    signal.addEventListener('abort', stop, {once: true})
+    if (signal.aborted) stop()
+    void promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', stop))
+  })
+}
+async function transfer<T>(work: () => Promise<T>, signal?: AbortSignal, priority: 'auto' | 'low' = 'auto') {
+  while (transfers.size >= transferLimit) {
+    if (priority === 'low') throw new Error('Playback skipped prefetch while the browser was busy.')
+    await waitFor(Promise.race(transfers), signal)
+  }
+  signal?.throwIfAborted()
+  const result = work()
+  const complete = result.then(() => {}, () => {}).finally(() => { transfers.delete(complete) })
+  transfers.add(complete)
+  return result
+}
 export function coordinate(raw: string, ra: boolean): number {
   const value = raw.trim().replaceAll('−', '-')
   const plain = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(value)
@@ -99,13 +126,17 @@ async function data<T>(url: string, signal: AbortSignal, body?: object, announce
       const path = job ? `/api/v1/jobs/${job}` : url
       const init: RequestInit = { signal }
       if (!job && body) Object.assign(init, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-      const response = await fetch(path, init)
-      if (!response.ok) {
-        const problem = await response.json().catch(() => ({}))
+      const {ok, status, json} = await transfer(async () => {
+        const response = await fetch(path, init)
+        return {ok: response.ok, status: response.status,
+          json: response.ok ? await response.json() : await response.json().catch(() => ({}))}
+      }, signal)
+      if (!ok) {
+        const problem = json
         if (problem.code === 'SESSION_BUSY' && round < 4) { await delay(1000, signal); continue }
-        throw new ServiceError(problem.message ?? `The service returned HTTP ${response.status}.`, problem.code, problem.retryAfterSec)
+        throw new ServiceError(problem.message ?? `The service returned HTTP ${status}.`, problem.code, problem.retryAfterSec)
       }
-      const result = await response.json() as Job<T>
+      const result = json as Job<T>
       if (result.status === 'succeeded' || result.status === 'partial') return result
       if (result.status === 'failed') throw new ServiceError(result.error.message, result.error.code)
       if (!('jobId' in result) || !/^[\w-]{1,80}$/.test(result.jobId)) throw new Error('Invalid job response.')
@@ -116,7 +147,12 @@ async function data<T>(url: string, signal: AbortSignal, body?: object, announce
       await delay(Math.max(1000, result.pollAfterMs, round > 10 ? 3000 : 0), signal)
     }
   } finally {
-    if (job && signal.aborted) void fetch(`/api/v1/jobs/${job}`, { method: 'DELETE', keepalive: true }).catch(() => {})
+    if (job && signal.aborted) {
+      void transfer(async () => {
+        const response = await fetch(`/api/v1/jobs/${job}`, {method: 'DELETE', keepalive: true})
+        await response.body?.cancel()
+      }).catch(() => {})
+    }
   }
 }
 function fill(query: Query) {
@@ -138,13 +174,20 @@ function validate(query: Query) {
 function urlFor(query: Query, example?: string) {
   const params = new URLSearchParams({ ra: `${query.raDeg}`, dec: `${query.decDeg}`, fov: `${query.fovArcmin}` })
   for (const [key, value] of Object.entries({ preset: example, start: query.start, end: query.end, wave: query.wavelengthUm,
-    detector: query.detector, interval: select('interval').value, a: shown?.productId, b: paired?.productId, mode: viewMode, marks: shareMarkParameter })) {
+    detector: query.detector, interval: select('interval').value,
+    a: shown?.coaddAnchor ?? shown?.productId, b: paired?.coaddAnchor ?? paired?.productId,
+    aCoadd: shown?.representation === 'coadd' ? shown.frameId : undefined,
+    bCoadd: paired?.representation === 'coadd' ? paired.frameId : undefined, mode: viewMode, marks: shareMarkParameter })) {
     if (value) params.set(key, String(value))
   }
   return `${appBase}explore${staticOnly ? '/' : ''}?${params}`
 }
 function share() {
   if (manifest) history.replaceState(null, '', urlFor(manifest.query, preset))
+}
+function surveyPass(frame: Frame) {
+  const value = String(frame.surveyPass ?? '').trim()
+  return value ? (/^\d+$/.test(value) ? `Survey ${value}` : value) : undefined
 }
 function buckets() {
   if (!manifest) return []
@@ -153,12 +196,29 @@ function buckets() {
   const groups = new Map<string | number, Frame[]>()
   const frames = [...manifest.frames].sort((a, b) => a.slotKey.localeCompare(b.slotKey))
   for (const frame of frames) {
-    const key = mode === 'passes' ? frame.surveyPass || 'Unassigned' : mode === 'dates' ? frame.slotKey : Math.floor((Date.parse(frame.slotKey) - start) / (day * (mode === 'week' ? 7 : 30)))
+    const pass = mode === 'passes' ? surveyPass(frame) : undefined
+    const dateKey = mode === 'dates' || mode === 'passes' ? frame.slotKey : Math.floor((Date.parse(frame.slotKey) - start) / (day * (mode === 'week' ? 7 : 30)))
+    const key = pass ? `pass:${pass}` : dateKey
     const group = groups.get(key) ?? []
     group.push(frame)
     groups.set(key, group)
   }
   return [...groups.values()]
+}
+function slotIndex(frame?: Frame) {
+  if (!frame) return -1
+  return slots.findIndex(group => group.some(item =>
+    item.frameId === frame.frameId || (frame.coaddAnchor && item.productId === frame.coaddAnchor)))
+}
+function rebuildTimeline() {
+  const interval = select('interval')
+  const passes = interval.querySelector<HTMLOptionElement>('[value=passes]')!
+  passes.disabled = interval.value !== 'passes' && !manifest?.frames.some(surveyPass)
+  slots = buckets()
+}
+function timelineLabel(frame: Frame) {
+  const time = formatTime(frame.startUtc)
+  return select('interval').value === 'passes' ? `${time} · ${surveyPass(frame) ?? 'Unverified survey pass'}` : time
 }
 function timeline(index: number, frame?: Frame) {
   slider.max = String(Math.max(0, slots.length - 1))
@@ -168,53 +228,133 @@ function timeline(index: number, frame?: Frame) {
   const last = manifest?.query.end ?? slots.at(-1)?.[0].slotKey
   el('date-first').textContent = first ?? ''
   el('date-last').textContent = last ?? ''
-  el('date-label').textContent = frame ? formatTime(frame.startUtc) : '—'
-  slider.setAttribute('aria-valuetext', frame ? formatTime(frame.startUtc) : 'No observation')
+  el('date-label').textContent = frame ? timelineLabel(frame) : '—'
+  slider.setAttribute('aria-valuetext', frame ? timelineLabel(frame) : 'No observation')
   const calendar = el('calendar')
   calendar.replaceChildren()
   if (first && last) {
     const start = Date.parse(first), span = Math.max(day, Date.parse(last) - start)
-    for (const slot of slots) {
+    for (const [tickIndex, slot] of slots.entries()) {
       const tick = document.createElement('span')
-      tick.style.left = `${Math.max(0, Math.min(100, 100 * (Date.parse(slot[0].slotKey) - start) / span))}%`
-      tick.dataset.current = String(slot.includes(frame!))
+      const representative = tickIndex === index && frame ? frame : slot[0]
+      tick.style.left = `${Math.max(0, Math.min(100, 100 * (Date.parse(representative.slotKey) - start) / span))}%`
+      tick.dataset.current = String(tickIndex === index)
       tick.dataset.failed = String(slot.every(item => failures.has(item.frameId)))
-      tick.title = formatTime(slot[0].startUtc)
+      tick.title = timelineLabel(representative)
       calendar.append(tick)
     }
   }
   const group = slots[index] ?? []
   const exposures = select('pointing')
   exposures.replaceChildren(...group.map(item => new Option(`${formatTime(item.startUtc)} · D${item.detector}`, item.frameId)))
-  if (frame) exposures.value = frame.frameId
+  if (frame) exposures.value = group.find(item => item.frameId === frame.frameId || item.productId === frame.coaddAnchor)?.frameId ?? ''
   el('pointing-label').hidden = group.length < 2
   button('next').disabled = index >= slots.length - 1
   button('previous').disabled = index <= 0
   button('play').disabled = slots.length < 2
-  el('timeline-note').textContent = slots.length === 1 ? 'Only one usable date is available in this selection. Playback requires at least two dates.' : `${manifest?.counts.observationDates ?? 0} archive dates · ${prepared.size} prepared in this session · ${slots.length} occupied intervals`
+  const summary = `${manifest?.counts.observationDates ?? 0} archive dates · ${prepared.size} prepared in this session · ${slots.length} occupied intervals`
+  const playbackNote = slots.length === 1
+    ? (manifest?.counts.observationDates === 1 ? 'Only one usable date is available in this selection. Playback requires at least two dates.'
+      : 'Only one occupied interval is available. Change the interval to browse individual dates.')
+    : summary
+  const hasUnknown = select('interval').value === 'passes' && slots.some(group => !surveyPass(group[0]))
+  el('timeline-note').textContent = hasUnknown ? `${playbackNote} Observations without a verified pass label are grouped by actual UTC date.` : playbackNote
 }
-function readImage(url: string, signal: AbortSignal, priority: "auto" | "low" = "auto") {
-  const asset = url.startsWith('/presets/') ? `${appBase}${url.slice(1)}` : url
-  const checked = sameOrigin(asset, asset.startsWith(`${appBase}presets/`) ? `${appBase}presets/` : '/data/')
-  if (raster.has(checked)) return Promise.resolve(raster.get(checked)!)
-  return new Promise<HTMLImageElement>((resolve, reject) => {
-    if (signal.aborted) return reject(signal.reason)
-    const image = new Image()
-    image.fetchPriority = priority
-    const finish = (error?: unknown) => {
-      signal.removeEventListener('abort', stop)
-      if (error) reject(error)
-      else {
-        if (raster.size === 8) raster.delete(raster.keys().next().value!)
-        raster.set(checked, image)
-        resolve(image)
+async function fetchRaster(url: string, signal: AbortSignal, priority: 'auto' | 'low') {
+  const response = await fetch(url, {signal, priority, redirect: 'error'})
+  if (!response.ok || !response.body) {
+    await response.body?.cancel()
+    throw new Error('The prepared observation image is unavailable.')
+  }
+  const reader = response.body.getReader()
+  const data = new Uint8Array(encodedRasterLimit)
+  const header = new DataView(data.buffer)
+  let size = 0
+  let checkedHeader = false
+  let complete = false
+  try {
+    if (Number(response.headers.get('Content-Length')) > data.length) throw new Error('The prepared image exceeds the transfer limit.')
+    while (true) {
+      const {value, done} = await reader.read()
+      if (done) { complete = true; break }
+      if (size + value.length > data.length) throw new Error('The prepared image exceeds the transfer limit.')
+      data.set(value, size)
+      size += value.length
+      if (!checkedHeader && size >= 24) {
+        if (header.getUint32(0) !== 0x89504e47 || header.getUint32(4) !== 0x0d0a1a0a ||
+            header.getUint32(8) !== 13 || header.getUint32(12) !== 0x49484452) {
+          throw new Error('The prepared image has an invalid PNG header.')
+        }
+        const width = header.getUint32(16), height = header.getUint32(20)
+        if (!width || !height || width > rasterSideLimit || height > rasterSideLimit) {
+          throw new Error('The prepared image exceeds the science grid dimensions.')
+        }
+        checkedHeader = true
       }
     }
-    const stop = () => { image.src = ''; finish(signal.reason) }
-    signal.addEventListener('abort', stop, { once: true })
-    image.onload = () => finish()
-    image.onerror = () => finish(new Error('The prepared observation image is unavailable.'))
-    image.src = checked
+  } finally {
+    if (!complete) await reader.cancel().catch(() => {})
+    reader.releaseLock()
+  }
+  if (!checkedHeader) throw new Error('The prepared image is incomplete.')
+  signal.throwIfAborted()
+  const image = await createImageBitmap(new Blob([data.subarray(0, size)], {type: 'image/png'}))
+  if (signal.aborted) {
+    image.close()
+    signal.throwIfAborted()
+  }
+  return image
+}
+function reserveVariant() {
+  if (new Set([...raster.keys(), ...rasterLoads.keys()]).size < variantLimit) return
+  for (const [key, image] of raster) {
+    if (image === rendered || image === renderedPair || image === comparisonAsset || rasterLoads.has(key)) continue
+    raster.delete(key)
+    image.close()
+    return
+  }
+  throw new Error('All image variants are still in use. Try the observation again.')
+}
+function clearRasters() {
+  for (const load of rasterLoads.values()) load.controller.abort()
+  for (const image of raster.values()) image.close()
+  raster.clear()
+}
+async function readImage(url: string, signal: AbortSignal, priority: 'auto' | 'low' = 'auto') {
+  signal.throwIfAborted()
+  const asset = url.startsWith('/presets/') ? `${appBase}${url.slice(1)}` : url
+  const checked = sameOrigin(asset, asset.startsWith(`${appBase}presets/`) ? `${appBase}presets/` : '/data/')
+  const cached = raster.get(checked)
+  if (cached) {
+    raster.delete(checked)
+    raster.set(checked, cached)
+    return cached
+  }
+  let load = rasterLoads.get(checked)
+  if (load?.controller.signal.aborted) {
+    await waitFor(load.promise.catch(() => {}), signal)
+    return readImage(url, signal, priority)
+  }
+  if (!load) {
+    if (priority === 'low' && transfers.size >= transferLimit) throw new Error('Playback skipped prefetch while the browser was busy.')
+    reserveVariant()
+    const controller = new AbortController()
+    const promise = transfer(() => fetchRaster(checked, controller.signal, priority), controller.signal, priority)
+      .then(image => {
+        if (controller.signal.aborted) {
+          image.close()
+          controller.signal.throwIfAborted()
+        }
+        raster.set(checked, image)
+        return image
+      }).finally(() => { rasterLoads.delete(checked) })
+    load = {controller, promise, consumers: 0}
+    rasterLoads.set(checked, load)
+  }
+  const active = load
+  active.consumers++
+  return waitFor(active.promise, signal).finally(() => {
+    if (--active.consumers === 0) active.controller.abort()
   })
 }
 function transform(canvas: HTMLCanvasElement) {
@@ -222,7 +362,7 @@ function transform(canvas: HTMLCanvasElement) {
   const size = Math.min(width, height) * zoom
   return { width, height, size, left: (width - size) / 2 + pan[0], top: (height - size) / 2 + pan[1] }
 }
-function paint(canvas: HTMLCanvasElement, image?: HTMLImageElement) {
+function paint(canvas: HTMLCanvasElement, image?: ImageBitmap, adjustContrast = true) {
   const { width, height, size, left, top } = transform(canvas)
   const dpr = Math.min(2, window.devicePixelRatio)
   canvas.width = Math.round(width * dpr)
@@ -241,12 +381,13 @@ function paint(canvas: HTMLCanvasElement, image?: HTMLImageElement) {
     }
     context.restore()
     context.imageSmoothingEnabled = false
-    context.filter = `contrast(${input('contrast').value})`
+    if (adjustContrast) context.filter = `contrast(${input('contrast').value})`
     context.drawImage(image, left, top, size, size)
   }
 }
 function redraw() {
-  paint(canvasA, comparisonAsset ?? (viewMode === 'blink' && blinkB ? renderedPair : rendered))
+  el('contrast-control').hidden = !rendered || Boolean(comparisonAsset)
+  paint(canvasA, comparisonAsset ?? (viewMode === 'blink' && blinkB ? renderedPair : rendered), !comparisonAsset)
   if (viewMode === 'side') paint(canvasB, renderedPair)
   el('layers-a').replaceChildren()
   el('layers-b').replaceChildren()
@@ -259,7 +400,7 @@ function details(frame: Frame) {
   for (const [key, value] of Object.entries({ Start: formatTime(frame.startUtc), End: formatTime(frame.endUtc), Product: frame.productId,
     Release: frame.release, Detector: `D${frame.detector}`, Wavelength: frame.wavelengthUm != null ? `${frame.wavelengthUm.toFixed(4)} µm${frame.bandwidthUm != null ? ` · ${frame.bandwidthUm.toFixed(4)} µm bandwidth` : ''}` : 'Unavailable',
     Footprint: frame.coverageFraction == null ? 'Unavailable' : `${Math.round(frame.coverageFraction * 100)}%`, 'Valid pixels': frame.validFraction == null ? 'Unavailable' : `${Math.round(frame.validFraction * 100)}%`,
-    Representation: frame.representation ?? 'Single exposure' })) {
+    'Survey pass': surveyPass(frame) ?? 'Unverified', Representation: frame.representation ?? 'Single exposure' })) {
     const dt = document.createElement('dt'), dd = document.createElement('dd')
     dt.textContent = key; dd.textContent = value; list.append(dt, dd)
   }
@@ -277,11 +418,24 @@ async function prepare(frame: Frame, signal: AbortSignal, representation = 'expo
   if (representation === 'exposure' && (cached?.imageUrl || frame.imageUrl)) return cached ?? frame
   const prefix = `/api/v1/series/${manifest!.seriesId}/frames/${frame.frameId}`
   const response = await data<Frame>(prefix, signal, { representation })
-  return response.data
+  return representation === 'coadd' ? {...response.data, coaddAnchor: frame.productId} : response.data
+}
+
+async function preparePinned(frame: Frame, signal: AbortSignal, coaddId?: string) {
+  const result = await prepare(frame, signal, coaddId ? 'coadd' : 'exposure')
+  if (coaddId && (result.frameId !== coaddId || result.representation !== 'coadd')) {
+    throw new Error('The pinned coadd version is unavailable.')
+  }
+  return result
 }
 
 let pinnedA: string | null = null
 let pinnedB: string | null = null
+let pinnedCoaddA: string | undefined
+let pinnedCoaddB: string | undefined
+function hasMissingPins(frames: Frame[]) {
+  return [pinnedA, pinnedB].some(pin => pin && !frames.some(frame => frame.productId === pin))
+}
 let shareMarkParameter: string | undefined
 let manifestPages: AbortController | undefined
 let retrySlot: number | undefined
@@ -294,6 +448,11 @@ function updatePrepared(frame: Frame) {
   if (!manifest) return
   const previous = manifest.frames.findIndex(item => item.frameId === frame.frameId)
   if (previous >= 0) manifest.frames[previous] = frame
+  else if (frame.coaddAnchor && surveyPass(frame)) {
+    const anchor = manifest.frames.find(item => item.productId === frame.coaddAnchor)
+    if (anchor && !surveyPass(anchor)) anchor.surveyPass = frame.surveyPass
+  }
+  rebuildTimeline()
 }
 
 async function showPrepared(frame: Frame, signal: AbortSignal = frameRequest.signal) {
@@ -305,11 +464,10 @@ async function showPrepared(frame: Frame, signal: AbortSignal = frameRequest.sig
   updatePrepared(frame)
   el('image-empty').hidden = true
   el('image-tools').hidden = false
-  el('contrast-control').hidden = false
   const title = `${formatTime(frame.startUtc)} · D${frame.detector}`
   el('frame-a').setAttribute('aria-label', `SPHEREx observation ${title}`)
   el('caption-a').textContent = title
-  const index = Math.max(0, slots.findIndex(group => group.some(item => item.slotKey === frame.slotKey)))
+  const index = Math.max(0, slotIndex(frame))
   timeline(index, frame)
   details(frame)
   updatePairChoices()
@@ -318,10 +476,11 @@ async function showPrepared(frame: Frame, signal: AbortSignal = frameRequest.sig
   document.dispatchEvent(new Event('spherex-frame'))
 }
 
-async function choose(index: number, options: { specific?: Frame; nextUsable?: boolean } = {}): Promise<boolean> {
+async function choose(index: number, options: { specific?: Frame; nextUsable?: boolean; coaddId?: string } = {}): Promise<boolean> {
   if (!manifest || index < 0 || index >= slots.length) return false
   const generation = ++selectionId
   frameRequest.abort()
+  pairController.value.abort()
   frameRequest = new AbortController()
   const signal = frameRequest.signal
   comparisonAsset = undefined
@@ -337,20 +496,25 @@ async function choose(index: number, options: { specific?: Frame; nextUsable?: b
       timeline(slots.indexOf(group), frame)
       note(`Loading ${formatTime(frame.startUtc)}…`)
       try {
-        const preparedFrame = await prepare(frame, signal)
+        const preparedFrame = await preparePinned(frame, signal, options.coaddId)
         if (signal.aborted || generation !== selectionId) return false
         await showPrepared(preparedFrame, signal)
         if (signal.aborted || generation !== selectionId) return false
         const warning = [...(attempts ? ['Earlier candidate exposures were unavailable.'] : []), ...lastWarnings].join(' ')
         note(warning || 'Observation ready.')
         retrySlot = undefined
-        const next = slots[slots.indexOf(group) + 1]?.[0]
+        const next = slots[slotIndex(preparedFrame) + 1]?.[0]
         const neighbor = next && (prepared.get(next.frameId) ?? next)
         if (neighbor?.imageUrl) void readImage(neighbor.imageUrl, signal, 'low').catch(() => {})
         return true
       } catch (error) {
         if (signal.aborted || generation !== selectionId) return false
         lastError = statusMessage(error)
+        if (options.coaddId) {
+          note(`The pinned coadd could not be restored. ${lastError}`, 'error')
+          retrySlot = index
+          return false
+        }
         if (!(error instanceof ServiceError) || !['LOW_OVERLAP', 'BAD_FITS', 'INCOMPATIBLE_WAVELENGTH', 'PRODUCT_MISSING'].includes(error.code)) {
           note(lastError, 'error')
           retrySlot = index
@@ -450,18 +614,22 @@ function pairLegend(result: { limits: number[]; units: string; warnings?: string
   legend.append(name, ramp, labels)
   legend.hidden = false
 }
-async function showPair(mode: string, other?: Frame) {
+async function showPair(mode: string, other?: Frame, coaddId?: string) {
   pairController.value.abort()
   pairController.value = new AbortController()
   const signal = pairController.value.signal
   if (!shown || !manifest || !other) return setMode('single')
   const a = shown
   try {
-    paired = await prepare(other, signal)
+    const second = await preparePinned(other, signal, coaddId)
     if (signal.aborted || shown !== a) return
+    const image = await readImage(second.imageUrl!, signal)
+    if (signal.aborted || shown !== a) return
+    paired = second
+    renderedPair = image
     updatePrepared(paired)
-    renderedPair = await readImage(paired.imageUrl!, signal)
-    if (signal.aborted || shown !== a) return
+    timeline(Math.max(0, slotIndex(shown)), shown)
+    updatePairChoices()
     el('caption-b').textContent = formatTime(paired.startUtc)
     pairNote.textContent = compatible(a, paired) ? 'Matched detector and central passbands. Pixel analysis checks common coverage and registration.'
       : 'The selected pair is unsuitable for pixel analysis. You can still inspect both observations.'
@@ -471,13 +639,15 @@ async function showPair(mode: string, other?: Frame) {
     const result = await data<{ assetUrl: string; limits: number[]; units: string; warnings?: string[]; mode: string }>(
       `/api/v1/series/${manifest.seriesId}/comparisons`, signal, { frameA: a.frameId, frameB: paired.frameId, mode })
     if (signal.aborted || shown !== a) return
-    comparisonAsset = await readImage(result.data.assetUrl, signal)
+    const asset = await readImage(result.data.assetUrl, signal)
+    if (signal.aborted || shown !== a) return
+    comparisonAsset = asset
     pairLegend(result.data, a, paired)
     redraw()
     note(result.warnings.join(' ') || 'Comparison ready.')
   } catch (error) {
     if (!signal.aborted) {
-      pairNote.textContent = statusMessage(error)
+      pairNote.textContent = coaddId ? `The second pinned coadd could not be restored. ${statusMessage(error)}` : statusMessage(error)
       setMode('single')
       note(pairNote.textContent, 'error')
     }
@@ -492,8 +662,11 @@ async function loadIndex(query: Query, example: string | undefined, fromLink = f
   setPlaying(false)
   manifest = undefined; slots = []; shown = undefined; paired = undefined
   rendered = undefined; renderedPair = undefined; retrySlot = undefined
-  failures.clear(); prepared.clear(); raster.clear()
-  if (!fromLink) { pinnedA = null; pinnedB = null; shareMarkParameter = undefined }
+  failures.clear(); prepared.clear(); clearRasters()
+  if (!fromLink) {
+    pinnedA = pinnedB = null
+    pinnedCoaddA = pinnedCoaddB = shareMarkParameter = undefined
+  }
   const restoredMode = fromLink ? viewMode : 'single'
   setMode('single')
   zoom = 1; pan = [0, 0]; redraw()
@@ -513,9 +686,6 @@ async function loadIndex(query: Query, example: string | undefined, fromLink = f
     if (signal.aborted || active !== queryId) return
     manifest = response.data
     lastWarnings = response.warnings
-    const expires = select('interval').querySelector<HTMLOptionElement>('[value=passes]')!
-    expires.disabled = !manifest.frames.some(frame => frame.surveyPass)
-    if (expires.disabled && select('interval').value === 'passes') select('interval').value = 'dates'
     if (!manifest.frames.length) {
       const empty = manifest.searchStatus === 'NO_COVERAGE' ? 'No published observations cover this field and selection.'
         : manifest.searchStatus === 'NO_COMPARABLE_FRAMES' ? 'No exposures match the selected detector, wavelength and dates.'
@@ -523,19 +693,29 @@ async function loadIndex(query: Query, example: string | undefined, fromLink = f
       note(empty, 'error')
       return
     }
-    if (pinnedA && !manifest.frames.some(frame => frame.productId === pinnedA)) await loadMore(true)
+    if (hasMissingPins(manifest.frames)) await loadMore(true)
     if (signal.aborted || active !== queryId) return
-    slots = buckets()
+    rebuildTimeline()
     const selected = pinnedA ? manifest.frames.find(frame => frame.productId === pinnedA) : undefined
     if (pinnedA && !selected) lastWarnings.push('The pinned first exposure is unavailable. Showing the earliest suitable observation.')
+    const other = pinnedB ? manifest.frames.find(frame => frame.productId === pinnedB) : undefined
+    if (pinnedB && !other) {
+      pairNote.textContent = 'The pinned second exposure is unavailable. Choose another date.'
+      lastWarnings.push(pairNote.textContent)
+    }
     el('timeline-panel').hidden = false
     button('share').hidden = false
-    const target = selected ? slots.findIndex(group => group.includes(selected)) : 0
-    await choose(Math.max(0, target), selected ? { specific: selected } : { nextUsable: true })
+    const target = Math.max(0, slotIndex(selected))
+    const restored = await choose(Math.max(0, target), selected ? {specific: selected, coaddId: pinnedCoaddA} : {nextUsable: true})
     if (signal.aborted || active !== queryId) return
-    const other = pinnedB ? manifest.frames.find(frame => frame.productId === pinnedB) : undefined
-    if (pinnedB && !other) pairNote.textContent = 'The pinned second exposure is unavailable. Choose another date.'
-    if (restoredMode !== 'single' && other) await showPair(restoredMode, other)
+    if (!restored && pinnedCoaddA && selected) {
+      lastWarnings.push('The pinned coadd is unavailable. Showing its original exposure.')
+      await choose(Math.max(0, target), {specific: selected})
+    }
+    if (signal.aborted || active !== queryId) return
+    if (restoredMode !== 'single' && other && (!pinnedCoaddA || (selected && restored))) {
+      await showPair(restoredMode, other, pinnedCoaddB)
+    }
     moreButton.hidden = !manifest.nextCursor
     share()
   } catch (error) {
@@ -557,9 +737,9 @@ async function loadMore(toFindPin = false) {
       if (signal.aborted || current !== manifest) return
       current.frames.push(...page.data.frames)
       current.nextCursor = page.data.nextCursor
-    } while (toFindPin && pinnedA && !current.frames.some(frame => frame.productId === pinnedA) && current.nextCursor)
-    slots = buckets()
-    timeline(Math.max(0, slots.findIndex(group => group.some(frame => frame.frameId === shown?.frameId))), shown)
+    } while (toFindPin && current.nextCursor && hasMissingPins(current.frames))
+    rebuildTimeline()
+    timeline(Math.max(0, slotIndex(shown)), shown)
     updatePairChoices()
     moreButton.hidden = !current.nextCursor
   } catch (error) { if (!signal.aborted) note(statusMessage(error), 'error') }
@@ -584,6 +764,12 @@ function readLocation() {
     select('interval').value = ['dates', 'week', 'month', 'passes'].includes(params.get('interval') ?? '') ? params.get('interval')! : 'dates'
     viewMode = validModes.includes(params.get('mode') ?? '') ? params.get('mode')! : 'single'
     pinnedA = params.get('a'); pinnedB = params.get('b')
+    const coaddA = params.get('aCoadd'), coaddB = params.get('bCoadd')
+    if ((coaddA && (!pinnedA || !/^[\w-]{1,80}$/.test(coaddA))) || (coaddB && (!pinnedB || !/^[\w-]{1,80}$/.test(coaddB)))) {
+      throw new Error('The shared link contains an invalid coadd identifier.')
+    }
+    pinnedCoaddA = coaddA || undefined
+    pinnedCoaddB = coaddB || undefined
     shareMarkParameter = (params.get('marks') || '').slice(0, 1000) || undefined
     void loadIndex(query, example, true)
   } catch (error) {
@@ -605,12 +791,12 @@ modePick.replaceChildren(...[
   ['absolute_change', 'Absolute change'], ['sum', 'Sum (A + B)'], ['residual_score', 'Residual score'],
 ].filter(([value]) => validModes.includes(value)).map(([value, label]) => new Option(label, value)))
 function onPairChange() {
-  const candidate = manifest?.frames.find(frame => frame.frameId === pairPick.value)
+  const candidate = manifest?.frames.find(frame => frame.frameId === pairPick.value) ?? prepared.get(pairPick.value)
   const mode = modePick.value === 'single' && candidate ? 'side' : modePick.value
   void showPair(mode, candidate)
 }
 pairPick.addEventListener('change', onPairChange)
-modePick.addEventListener('change', () => { void showPair(modePick.value, manifest?.frames.find(frame => frame.frameId === pairPick.value)) })
+modePick.addEventListener('change', () => { void showPair(modePick.value, manifest?.frames.find(frame => frame.frameId === pairPick.value) ?? prepared.get(pairPick.value)) })
 el('pair-controls').append(pairPick, modePick, pairNote)
 
 for (const [slug, field] of known) {
@@ -633,8 +819,8 @@ el('query-form').addEventListener('submit', event => {
   } catch (error) { el('query-error').textContent = statusMessage(error); el('query-error').hidden = false }
 })
 select('interval').addEventListener('change', () => {
-  slots = buckets()
-  const index = Math.max(0, slots.findIndex(group => group.some(frame => frame.slotKey === shown?.slotKey)))
+  rebuildTimeline()
+  const index = Math.max(0, slotIndex(shown))
   timeline(index, shown ?? slots[index]?.[0]); share()
 })
 select('speed').addEventListener('change', () => { if (playing) setPlaying(true) })

@@ -1,5 +1,7 @@
 import asyncio
 import json
+import logging
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -8,11 +10,14 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 
-from server.app import RequestBounds, create_app
-from server.config import Settings
+from server.app import RequestBounds, Service, create_app
+from server.config import MIB, ROOT, Settings
 from server.contracts import Problem, SeriesQuery, ready
 from server.jobs import Jobs
+from server import release_index
 from server.store import Store
+from server.telemetry import ALERT_PERIODS, INTERVAL, RequestTraffic, Telemetry
+from server import upstream
 from server.upstream import TransferBudget, UpstreamError, check_url
 
 
@@ -103,6 +108,74 @@ def test_failed_job_preserves_archive_reason(tmp_path):
         jobs.close()
 
 
+def test_upstream_admission_preserves_coalesced_and_local_work(tmp_path, monkeypatch):
+    settings = Settings(cache=tmp_path, job_workers=1, irsa_daily_bytes=10, catalog_daily_bytes=2)
+    transfers = upstream.RollingTransfers(settings)
+    monkeypatch.setattr(upstream, "TRANSFERS", transfers)
+    monkeypatch.setattr(upstream, "CIRCUIT_UNTIL", 0.0)
+    monkeypatch.setattr(upstream, "HALF_OPEN", False)
+    transfers.charge("catalog", 2)
+    with pytest.raises(Problem) as rejected:
+        upstream.check_admission("catalog")
+    assert rejected.value.code == "DAILY_BUDGET" and rejected.value.status == 429 and rejected.value.retry_after == 60
+
+    jobs = Jobs(settings)
+    finish = threading.Event()
+
+    def work():
+        assert finish.wait(2)
+        return ready({})
+
+    def admit():
+        upstream.check_admission("irsa")
+
+    try:
+        original = jobs.submit("shared", "ip1", "session1", "archive", work, admit=admit)
+        monkeypatch.setattr(upstream, "CIRCUIT_UNTIL", time.monotonic() + 30)
+        same = jobs.submit("shared", "ip2", "session2", "archive", work, admit=admit)
+        assert same["jobId"] == original["jobId"]
+        with pytest.raises(Problem) as blocked:
+            jobs.submit("different", "ip3", "session3", "archive", work, admit=admit)
+        assert blocked.value.code == "CIRCUIT_OPEN" and blocked.value.status == 503 and blocked.value.retry_after > 0
+        assert jobs.submit("local", "ip3", "session3", "comparing cached frames", work)["status"] == "queued"
+        assert "different" not in jobs.by_key
+    finally:
+        finish.set()
+        jobs.close()
+
+
+def test_half_open_circuit_retains_status_if_local_transfer_budget_blocks_probe(tmp_path, monkeypatch):
+    availability = {"checkedAtUnix": int(time.time()), "status": "degraded"}
+    previous_until = time.monotonic() - 2
+    transfers = upstream.RollingTransfers(Settings(cache=tmp_path, irsa_daily_bytes=2))
+    transfers.charge("irsa", 2)
+    monkeypatch.setattr(upstream, "TRANSFERS", transfers)
+    monkeypatch.setattr(upstream, "CIRCUIT_UNTIL", previous_until)
+    monkeypatch.setattr(upstream, "HALF_OPEN", False)
+    monkeypatch.setattr(upstream, "LAST_PROBE", availability)
+
+    def wire_call(*args, **options):
+        pytest.fail("An exhausted transfer budget reached the wire")
+
+    monkeypatch.setattr(upstream.requests, "get", wire_call)
+    with pytest.raises(Problem) as rejected:
+        upstream.fetch("https://irsa.ipac.caltech.edu/SIA?COLLECTION=spherex_dr1", limit=100,
+                       deadline=time.monotonic() + 2, purpose="metadata")
+    assert rejected.value.code == "DAILY_BUDGET"
+    assert upstream.LAST_PROBE is availability and upstream.CIRCUIT_UNTIL == previous_until and not upstream.HALF_OPEN
+
+
+def test_successful_cube_probe_preserves_degraded_discovery_status(monkeypatch):
+    monkeypatch.setattr(upstream, "CIRCUIT_UNTIL", 0.0)
+    monkeypatch.setattr(upstream, "LAST_PROBE", None)
+    monkeypatch.setattr(upstream, "LAST_DISCOVERY_PROBE", None)
+    monkeypatch.setattr(upstream, "FAILURES", [])
+    upstream.record_probe(False, True, "metadata")
+    upstream.record_probe(False, False, "cube")
+    assert upstream.LAST_PROBE["purpose"] == "cube" and upstream.LAST_PROBE["status"] == "reachable"
+    assert upstream.LAST_DISCOVERY_PROBE["purpose"] == "metadata" and upstream.LAST_DISCOVERY_PROBE["status"] == "degraded"
+
+
 def test_store_idempotent_assets_and_canonical_frame(tmp_path):
     store = Store(Settings(cache=tmp_path))
     data = {"image": np.full((3, 3), 1.0), "valid": np.ones((3, 3), dtype=bool)}
@@ -138,6 +211,102 @@ def test_app_declares_same_origin_routes(tmp_path):
     routes = set(app.openapi()["paths"])
     routes.update(route.path for route in app.routes if hasattr(route, "path"))
     assert {"/", "/explore", "/readyz", "/api/v1/series", "/data/{name}", "/presets"} <= routes
+
+
+def test_readiness_checks_the_installed_bundle_and_cache_schema(tmp_path):
+    dist = tmp_path / "dist"
+    shutil.copytree(ROOT / "web" / "public" / "presets", dist / "presets")
+    store = Store(Settings(cache=tmp_path / "cache", web=dist, presets=ROOT / "presets"))
+    assert 0 < store.example_bundle() < 100 * MIB
+    assert store.cache_available()
+    barnard = dist / "presets" / "barnard"
+    (barnard / next(barnard.glob("*.png")).name).unlink()
+    assert store.example_bundle() is None
+    store.db.unlink()
+    assert not store.cache_available()
+
+
+def test_telemetry_reports_observations_and_only_alerts_for_sustained_failure(tmp_path, monkeypatch, caplog):
+    from types import SimpleNamespace
+
+    settings = Settings(cache=tmp_path, monitor=True)
+    service = Service(settings)
+    telemetry = Telemetry(service)
+    transfers = upstream.RollingTransfers(settings)
+    monkeypatch.setattr(upstream, "TRANSFERS", transfers)
+    transfers.charge("irsa", 19)
+    service.store.get("series", "first")
+    service.store.put("series", "first", {"status": "succeeded"})
+    service.store.get("series", "first")
+
+    async def downstream(_scope, _receive, send):
+        await send({"type": "http.response.start", "status": 429})
+        await send({"type": "http.response.body", "body": b"limit"})
+
+    async def noop(_message):
+        pass
+
+    try:
+        asyncio.run(RequestTraffic(downstream)({"type": "http", "app": SimpleNamespace(state=SimpleNamespace(telemetry=telemetry)),
+                                                "query_string": b"secret=never-recorded"}, None, noop))
+        work = telemetry.sample()
+        assert work["upstream24hBytes"] == {"irsa": 19, "catalog": 0}
+        assert work["cacheHits"] == work["cacheMisses"] == 1
+        with caplog.at_level(logging.INFO, logger="uvicorn.error.spherex.telemetry"):
+            for interval in range(ALERT_PERIODS + 1):
+                now = int(time.time()) + interval * INTERVAL
+                monkeypatch.setattr(upstream, "LAST_PROBE", {"checkedAtUnix": now, "status": "degraded"})
+                telemetry.report({**work, "queueRejections": 1}, now)
+        metrics = [json.loads(record.message.split(" ", 1)[1]) for record in caplog.records if record.message.startswith("spherex_metrics ")]
+        assert metrics[0]["requests"] == metrics[0]["http429"] == 1 and metrics[0]["responseBodyBytes"] == 5
+        assert metrics[1]["requests"] == 0
+        assert caplog.text.count("reason=queue_saturation") == caplog.text.count("reason=archive_degraded") == 1
+        assert "never-recorded" not in caplog.text
+    finally:
+        service.jobs.close()
+
+
+def test_daily_release_inventory_retains_the_last_complete_snapshot(tmp_path, monkeypatch):
+    from urllib.parse import parse_qs, urlsplit
+
+    calls = []
+    listings = {
+        "": ["dr1/", "qr2/", "qr3/", "qr4/"],
+        "dr1/level2/": ["dr1/level2/2026W20_1A/", "dr1/level2/2025W52_2A/"],
+        "qr3/level2/": ["qr3/level2/2026W40_2A/"],
+    }
+
+    def fetch_listing(url, *, limit, deadline, purpose, budget):
+        parts = check_url(url, purpose)
+        prefix = parse_qs(parts.query, keep_blank_values=True)["prefix"][0]
+        assert limit == 128 * 1024 and deadline > time.monotonic()
+        calls.append(prefix)
+        items = "".join(f"<CommonPrefixes><Prefix>{path}</Prefix></CommonPrefixes>" for path in listings[prefix])
+        truncated = str(prefix == "qr3/level2/" and reject_listing).lower()
+        data = f'<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Prefix>{prefix}</Prefix><IsTruncated>{truncated}</IsTruncated>{items}</ListBucketResult>'.encode()
+        budget.attempt()
+        budget.charge(len(data))
+        return data
+
+    reject_listing = False
+    monkeypatch.setattr(release_index, "fetch", fetch_listing)
+    service = Service(Settings(cache=tmp_path))
+    try:
+        release_index.schedule_if_due(service)
+    finally:
+        service.jobs.close()
+    info = service.store.get("release-index", "snapshot")[0]
+    assert calls == ["", "dr1/level2/", "qr3/level2/"]
+    assert info["published"] == ["DR1", "QR2", "QR3", "QR4"]
+    assert info["planningPeriods"]["DR1"] == {"count": 2, "latestPlanningPeriod": "2026W20_1A"}
+    release_index.schedule_if_due(service)
+    assert len(calls) == 3
+
+    reject_listing = True
+    with pytest.raises(Problem, match="incomplete release listing"):
+        release_index.refresh(service.store)
+    assert service.store.get("release-index", "attempt")[0]["status"] == "failed"
+    assert service.store.get("release-index", "snapshot")[0] == info
 
 
 def test_ten_concurrent_clients_coalesce_and_preserve_analysis_slot(tmp_path):

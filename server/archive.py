@@ -277,12 +277,12 @@ def make_manifest(query, indexed, *, collections=None, complete=True, warnings=(
             "frames": first + rest}
 
 
-def discover(query):
+def discover(query, *, budget=None, deadline=None):
     query, start, end = bounds(query)
     if start > end:
         return make_manifest(query, [], warnings=["The date range does not overlap published mission dates."])
-    budget = TransferBudget(4 * MIB, 12)
-    deadline = time.monotonic() + 20
+    budget = budget if budget is not None else TransferBudget(4 * MIB, 12)
+    deadline = min(deadline, time.monotonic() + 20) if deadline is not None else time.monotonic() + 20
     with ThreadPoolExecutor(max_workers=2) as executor:
         futures = [executor.submit(collection_index, *item, query, start, end, budget, deadline) for item in COLLECTIONS]
         results = [future.result() for future in futures]

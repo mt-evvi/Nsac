@@ -7,12 +7,14 @@ import os
 import shutil
 import sqlite3
 import tempfile
+import threading
 import time
 from contextlib import closing
 from pathlib import Path
 
 import numpy as np
 
+from .config import BUNDLED_EXAMPLES
 from .contracts import Problem
 
 CACHE_SCHEMA = "v1"
@@ -45,6 +47,8 @@ class Store:
         if not self.presets.is_dir():
             self.presets = settings.web.parent / "public" / "presets"
         self.arrays = settings.presets
+        self.lookup_counts = [0, 0]
+        self.lookup_lock = threading.Lock()
         self.assets.mkdir(parents=True, exist_ok=True)
         self.db = self.root / "cache.sqlite3"
         with closing(self.connect()) as conn, conn:
@@ -66,10 +70,65 @@ class Store:
     def get(self, kind, key):
         with closing(self.connect()) as conn, conn:
             row = conn.execute("SELECT value, created FROM records WHERE kind = ? AND key = ?", (kind, key)).fetchone()
-            if row is None:
+            if row is not None:
+                conn.execute("UPDATE records SET accessed = ? WHERE kind = ? AND key = ?", (time.time(), kind, key))
+        if self.settings.monitor and kind in {"series", "frame", "analysis", "catalog"}:
+            with self.lookup_lock:
+                self.lookup_counts[int(row is not None)] += 1
+        return (json.loads(row[0]), max(0, time.time() - row[1])) if row is not None else None
+
+    def cache_available(self):
+        if not self.db.is_file():
+            return False
+        try:
+            with closing(self.connect()) as conn:
+                conn.execute("SELECT kind,key,value,created,accessed FROM records LIMIT 0")
+                conn.execute("SELECT name,size,accessed FROM files LIMIT 0")
+        except sqlite3.Error:
+            return False
+        return True
+
+    def cache_activity(self):
+        with closing(self.connect()) as conn:
+            record_bytes, oldest = conn.execute("SELECT COALESCE(SUM(length(value)),0),MIN(created) FROM records").fetchone()
+            asset_bytes, = conn.execute("SELECT COALESCE(SUM(size),0) FROM files").fetchone()
+        with self.lookup_lock:
+            misses, hits = self.lookup_counts
+            self.lookup_counts = [0, 0]
+        return {
+            "cachePayloadBytes": record_bytes + asset_bytes,
+            "oldestCacheRecordSeconds": max(0, int(time.time() - oldest)) if oldest is not None else None,
+            "cacheHits": hits, "cacheMisses": misses, "diskFreeBytes": shutil.disk_usage(self.root).free,
+        }
+
+    def example_bundle(self):
+        """Read installed manifest headers and verify every listed image, mask and array exists."""
+        manifests = self.settings.web / "presets"
+        files = set()
+        for slug in BUNDLED_EXAMPLES:
+            directory = manifests / slug
+            manifest = directory / "manifest.json"
+            try:
+                data = json.loads(manifest.read_text(encoding="utf-8"))["data"]
+                if data["schemaVersion"] != 1 or data["seriesId"] != f"preset-{slug}" or not data["frames"]:
+                    return None
+                files.add(manifest)
+                prefix = f"/presets/{slug}/"
+                for frame in data["frames"]:
+                    frame_id = frame["frameId"]
+                    if not frame_id or Path(frame_id).name != frame_id:
+                        return None
+                    for name in (frame["imageUrl"], frame["maskUrl"]):
+                        if not name.startswith(prefix) or Path(name).name != name.removeprefix(prefix):
+                            return None
+                        files.add(directory / Path(name).name)
+                    files.add(self.arrays / slug / f"{frame_id}.npz")
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
                 return None
-            conn.execute("UPDATE records SET accessed = ? WHERE kind = ? AND key = ?", (time.time(), kind, key))
-        return json.loads(row[0]), max(0, time.time() - row[1])
+        try:
+            return sum(path.stat().st_size for path in files) if all(path.is_file() for path in files) else None
+        except OSError:
+            return None
 
     def put(self, kind, key, value):
         payload = json.dumps(value, separators=(",", ":"), allow_nan=False).encode()

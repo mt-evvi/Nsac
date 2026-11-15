@@ -71,6 +71,7 @@
     "frames": [
       {
         "frameId": "a288715f23842942cf604d566b10ad35",
+        "surveyPass": "Survey 1",
         "productId": "level2_2025W46_1A_0076_3D6_spx_l2b-v27-2026-206",
         "obsId": "2025W46_1A_0076_3",
         "release": "DR1",
@@ -124,6 +125,7 @@
       },
       {
         "frameId": "09208f387e31ef6dd598f1646eafb8cf",
+        "surveyPass": "Survey 2",
         "productId": "level2_2026W17_1B_0507_1D6_spx_l2b-v27-2026-242",
         "obsId": "2026W17_1B_0507_1",
         "release": "DR1",

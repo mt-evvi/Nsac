@@ -18,6 +18,11 @@ MAX_REFERENCE_RESIDUAL = 0.30
 MAX_PROFILE_DIFFERENCE = 0.15
 REGISTRATION_FLOOR_PX = 0.15
 MANUAL_FLOOR_PX = 0.50
+SOURCE_LIMIT = 50
+CENTROID_MATCH_PX = 0.001
+MAX_ASSOCIATION_SPEED_PX_PER_DAY = 0.12
+MAX_ASSOCIATION_RADIUS_PX = 8.0
+ASSOCIATION_SIGMA = 3.0
 
 
 class AnalysisError(Exception):
@@ -95,7 +100,7 @@ def _compatible_pair(a, b):
     }
 
 
-def _native_sources(frame, limit, region=None):
+def _native_sources(frame, limit, region=None, *, correlated=False):
     image, variance = frame["image"], frame["variance"]
     valid = _valid(frame)
     if np.count_nonzero(valid) < 25:
@@ -107,16 +112,14 @@ def _native_sources(frame, limit, region=None):
     mask_distance = distance_transform_edt(np.pad(valid, 1))[1:-1, 1:-1]
     peaks = (filtered == maximum_filter(filtered, size=5)) & (filtered > 5 * noise) & (mask_distance > 3)
     ys, xs = np.where(peaks)
-    by_strength = sorted(zip(ys, xs), key=lambda p: (-filtered[p], p[0], p[1]))[:limit * 3]
+    eligible = ((y, x) for y, x in zip(ys, xs) if _in_region(x, y, region))
+    by_strength = sorted(eligible, key=lambda p: (-filtered[p], p[0], p[1]))[:limit * 3]
     sources = []
     oy, ox = np.mgrid[-3:4, -3:4]
     radius = np.hypot(ox, oy)
     core = radius <= 2.9
     annulus = radius >= 3
     for y, x in by_strength:
-        if region and not (region["x"] <= x < region["x"] + region["width"]
-                           and region["y"] <= y < region["y"] + region["height"]):
-            continue
         sl = np.s_[y - 3:y + 4, x - 3:x + 4]
         local_valid = valid[sl]
         sky = local_valid & annulus
@@ -128,7 +131,13 @@ def _native_sources(frame, limit, region=None):
         level = float(np.median(sky_values))
         local_noise = max(_sigma(sky_values), float(np.median(np.sqrt(variance[sl][sky]))))
         flux = float(np.sum(patch[signal] - level))
-        flux_error = sqrt(float(variance[sl][signal].sum()) + (signal.sum() * local_noise) ** 2 / sky.sum())
+        signal_variance = variance[sl][signal]
+        sky_error = signal.sum() * local_noise
+        if correlated:
+            # Add the standard deviations to bound covariance across the aperture and sky annulus.
+            flux_error = float(np.sqrt(signal_variance).sum() + sky_error)
+        else:
+            flux_error = sqrt(float(signal_variance.sum()) + sky_error**2 / sky.sum())
         snr = flux / flux_error
         if snr < 5:
             continue
@@ -144,6 +153,8 @@ def _native_sources(frame, limit, region=None):
             continue
         width = sqrt((minor + major) / 2)
         cx, cy = float(x + dx), float(y + dy)
+        if not _in_region(cx, cy, region):
+            continue
         sigma = max(0.08, width / snr)
         sources.append({
             "frameId": frame["metadata"]["frameId"], "pixel": {"x": cx, "y": cy}, "sigmaPx": sigma,
@@ -425,22 +436,41 @@ def _measure_marks(frames, marks, automatic):
             x, y = wcs.world_to_pixel(SkyCoord(sky["raDeg"] * u.deg, sky["decDeg"] * u.deg))
         if not np.isfinite((x, y)).all() or not (-0.5 <= x < grid["width"] - 0.5 and -0.5 <= y < grid["height"] - 0.5):
             raise AnalysisError("MARK_OUTSIDE_FIELD", "Choose a mark inside the selected image.")
+        source = mark if automatic else None
+        centroid = mark.get("centroidPixel")
+        if centroid is not None:
+            source = _verified_centroid(frame, centroid)
+            x, y = source["pixel"]["x"], source["pixel"]["y"]
         if not _valid(frame)[int(y + 0.5), int(x + 0.5)]:
             raise AnalysisError("MARK_MASKED", "A mark falls on a masked or uncovered pixel.")
         sky = wcs.pixel_to_world(x, y).icrs
         scale = sqrt(abs(np.linalg.det(grid["cd"]))) * 3600
-        uncertainty = mark.get("sigmaPx", MANUAL_FLOOR_PX) if automatic else MANUAL_FLOOR_PX
+        uncertainty = source.get("sigmaPx", MANUAL_FLOOR_PX) if source is not None else MANUAL_FLOOR_PX
         time = frame_time(metadata)
-        measured.append((time, sky, {
+        measurement = {
             "frameId": mark["frameId"], "visitId": metadata["visitId"],
             "productId": metadata.get("productId"), "timeUtc": _utc(time),
             "raDeg": float(sky.ra.deg), "decDeg": float(sky.dec.deg),
             "pixel": {"x": float(x), "y": float(y)},
             "sigmaArcsec": float(hypot(uncertainty, REGISTRATION_FLOOR_PX) * scale),
-            "method": mark.get("method", "measured centroid") if automatic else "manual mark",
+            "method": source.get("method", "measured centroid") if source is not None else "manual mark",
             "original": {key: mark[key] for key in ("pixel", "sky") if mark.get(key) is not None},
-        }))
+        }
+        if centroid is not None:
+            measurement["originalPixel"] = mark["pixel"]
+        if source is not None and "covariancePx2" in source:
+            measurement["covariancePx2"] = source["covariancePx2"]
+        measured.append((time, sky, measurement))
     return sorted(measured, key=lambda row: row[0])
+
+
+def _verified_centroid(frame, pixel):
+    # Region-filtered detections use centroids from the whole prepared frame.
+    for source in _native_sources(frame, SOURCE_LIMIT):
+        measured = source["pixel"]
+        if hypot(measured["x"] - pixel["x"], measured["y"] - pixel["y"]) <= CENTROID_MATCH_PX:
+            return source
+    raise AnalysisError("CENTROID_UNAVAILABLE", "The chosen centroid is unavailable in this frame. Find sources again or use a manual mark.")
 
 
 def _linear_forecast(measured, grid, baseline, horizon_days):
@@ -527,32 +557,51 @@ def track(frames, *, marks, horizon_days=None, automatic=False, ambiguous=False)
     }
 
 
+def _centroid_covariance(source):
+    if source.get("covariancePx2") is not None:
+        return np.asarray(source["covariancePx2"], dtype=float)
+    return np.eye(2) * source.get("sigmaPx", MANUAL_FLOOR_PX)**2
+
+
+def _within_motion_envelope(displacement, covariance, travel):
+    distance = hypot(*displacement)
+    if distance <= travel:
+        return True
+    direction = displacement / distance
+    # The relative position includes a registration floor for both independent visits.
+    variance = float(direction @ covariance @ direction) + 2 * REGISTRATION_FLOOR_PX**2
+    return distance - travel <= ASSOCIATION_SIGMA * sqrt(variance)
+
+
 def _associate(groups, limit):
     tracks = []
     for time, sources in groups:
         points = _pixels(sources)
         tree = cKDTree(points)
+        covariances = [_centroid_covariance(source) for source in sources]
         claims = {}
         active = []
         for index, candidate in enumerate(tracks):
             last_time, previous = candidate["points"][-1]
             days = (time - last_time).total_seconds() / 86400
-            gate = min(8.0, 1.1 + 0.12 * days)
+            travel = MAX_ASSOCIATION_SPEED_PX_PER_DAY * days
             last = _pixels([previous])[0]
-            region = tree.query_ball_point(last, gate)
+            covariance = _centroid_covariance(previous)
+            region = [match for match in tree.query_ball_point(last, MAX_ASSOCIATION_RADIUS_PX)
+                      if _within_motion_envelope(points[match] - last, covariance + covariances[match], travel)]
             if len(region) > 1:
                 candidate["ambiguous"] = True
             for match in region:
-                claims.setdefault(match, []).append((index, float(np.linalg.norm(last - points[match]))))
-            active.append(region)
+                claims.setdefault(match, []).append(index)
+            active.append(len(region))
         matched = set()
         for match, owners in sorted(claims.items()):
             if len(owners) > 1:
-                for index, _ in owners:
+                for index in owners:
                     tracks[index]["ambiguous"] = True
             else:
-                index, _ = owners[0]
-                if len(active[index]) == 1:
+                index = owners[0]
+                if active[index] == 1:
                     tracks[index]["points"].append((time, sources[match]))
                     matched.add(match)
         for index, source in enumerate(sources):
@@ -564,6 +613,11 @@ def _associate(groups, limit):
 def _in_footprint(source, valid):
     x, y = source["pixel"]["x"], source["pixel"]["y"]
     return valid[int(y + 0.5), int(x + 0.5)]
+
+
+def _in_region(x, y, region):
+    return not region or (region["x"] <= x < region["x"] + region["width"]
+                          and region["y"] <= y < region["y"] + region["height"])
 
 
 def _matched_brightness(anchor, other, comparison):
@@ -582,7 +636,61 @@ def _matched_brightness(anchor, other, comparison):
     return float(abs(difference[pixels].sum()) / noise)
 
 
-def detect(frames, *, region=None, limit=50):
+def _isolated_input_spike(frame, pixel, direction):
+    """Veto an isolated native-grid outlier that matching kernels would spread."""
+    x, y = round(pixel["x"]), round(pixel["y"])
+    stamp = np.s_[y - 2:y + 3, x - 2:x + 3]
+    image = frame["image"][stamp]
+    variance = frame["variance"][stamp]
+    if image.shape != (5, 5):
+        return False
+    valid = frame["valid"][stamp] & np.isfinite(image) & np.isfinite(variance) & (variance > 0)
+    sky = valid.copy()
+    core = np.s_[1:4, 1:4]
+    sky[core] = False
+    if sky.sum() < 8:
+        return False
+    background = np.median(image[sky])
+    contrast = np.maximum((image[core] - background) * direction, 0)
+    core_valid = valid[core]
+    excess = np.where(core_valid, contrast, 0)
+    peak_index = np.unravel_index(excess.argmax(), excess.shape)
+    peak = excess[peak_index]
+    if not core_valid[peak_index]:
+        return False
+    noise = max(_sigma(image[sky]), sqrt(variance[core][peak_index]))
+    return peak > 8 * noise and peak >= 0.90 * excess.sum()
+
+
+def _signed_residual_groups(reference, frame, comparison, limit, region):
+    difference, variance, valid, noise_inflation = comparison
+    first, second = reference["metadata"], frame["metadata"]
+    paired = {"frameA": first["frameId"], "frameB": second["frameId"],
+              "timeA": _utc(frame_time(first)), "timeB": _utc(frame_time(second)),
+              "label": "single-pair change", "method": "Signed residual aperture moments with a correlated-noise bound"}
+    wcs = wcs_for(first["grid"])
+    residual = {"metadata": second, "valid": valid, "variance": variance * noise_inflation**2}
+    groups = []
+    # Distinct measurements for brighter and fainter groups, each with positive significance.
+    for sign, direction in (("positive", 1), ("negative", -1)):
+        residual["image"] = difference * direction
+        sources = _native_sources(residual, limit, region=region, correlated=True)
+        if not sources:
+            continue
+        points = wcs.pixel_to_world(*_pixels(sources).T).icrs
+        for source, point in zip(sources, points):
+            pixel = source["pixel"]
+            if _isolated_input_spike(frame, pixel, direction) or _isolated_input_spike(reference, pixel, -direction):
+                continue
+            measured = {key: source[key] for key in (
+                "pixel", "covariancePx2", "snr", "fluxError", "fluxUnit", "maskDistancePx", "widthPx",
+            )}
+            groups.append({**measured, **paired, "sign": sign, "raDeg": float(point.ra.deg),
+                           "decDeg": float(point.dec.deg), "flux": source["flux"] * direction})
+    return groups
+
+
+def detect(frames, *, region=None, limit=SOURCE_LIMIT):
     if not 2 <= len(frames) <= 8:
         raise AnalysisError("INVALID_FRAME_COUNT", "Choose two to eight prepared frames.")
     ordered = sorted(frames, key=lambda frame: frame_time(frame["metadata"]))
@@ -603,6 +711,7 @@ def detect(frames, *, region=None, limit=50):
     comparisons = {}
     tested = []
     sources_preview = []
+    residual_groups = []
     for frame in chosen:
         frame_id = frame["metadata"]["frameId"]
         tested.append(frame_id)
@@ -619,6 +728,7 @@ def detect(frames, *, region=None, limit=50):
             warnings.append(f"{frame_id}: candidate ranking requires a calibrated, vetted comparison.")
             continue
         comparisons[frame_id] = diff, variance, valid, metadata["heuristicNoiseInflation"]
+        residual_groups.extend(_signed_residual_groups(reference, frame, comparisons[frame_id], limit + 1, region))
         certified.append((frame, native))
     candidates = []
     if comparisons:
@@ -627,10 +737,8 @@ def detect(frames, *, region=None, limit=50):
         reference_valid = np.logical_or.reduce([comparison[2] for comparison in comparisons.values()])
         for frame, sources in certified:
             valid = reference_valid if frame is reference else comparisons[frame["metadata"]["frameId"]][2]
-            selected = [s for s in sources if _in_footprint(s, valid) and (not region or (
-                region["x"] <= s["pixel"]["x"] < region["x"] + region["width"]
-                and region["y"] <= s["pixel"]["y"] < region["y"] + region["height"]
-            ))]
+            selected = [s for s in sources if _in_footprint(s, valid)
+                        and _in_region(s["pixel"]["x"], s["pixel"]["y"], region)]
             groups.append((frame_time(frame["metadata"]), selected))
         qualified = [frame for frame, _ in certified]
         for association in _associate(groups, 100):
@@ -655,15 +763,18 @@ def detect(frames, *, region=None, limit=50):
             else:
                 continue
             candidates.append({
-                "candidateId": content_key("detection-v1", marks), "label": label, "reason": reason,
+                "candidateId": content_key("detection-v2", marks, ambiguous), "label": label, "reason": reason,
                 "ambiguous": ambiguous, "marks": marks,
                 "positionScore": position_score, "brightnessScore": brightness_score,
                 "brightnessMethod": "Common-aperture difference with a conservative correlated-noise bound",
                 "score": min(50.0, max(position_score, brightness_score)) * sqrt(len(marks)) / (2 if ambiguous else 1),
             })
     candidates.sort(key=lambda item: (-item["score"], item["candidateId"]))
+    residual_groups.sort(key=lambda item: (-item["snr"], item["timeB"], item["pixel"]["y"], item["pixel"]["x"]))
+    if len(residual_groups) > limit:
+        warnings.append(f"Showing the {limit} strongest signed residual groups from the tested visits.")
     return {
         "candidates": candidates[:limit], "testedFrameIds": tested, "sources": sources_preview,
-        "warnings": warnings, "partial": bool(warnings),
+        "residualGroups": residual_groups[:limit], "warnings": warnings, "partial": bool(warnings),
     }
 

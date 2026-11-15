@@ -119,11 +119,14 @@ class Mark(Input):
     frameId: ID
     pixel: PixelPosition | None = None
     sky: SkyPosition | None = None
+    centroidPixel: PixelPosition | None = None
 
     @model_validator(mode="after")
     def one_position(self):
         if (self.pixel is None) == (self.sky is None):
             raise ValueError("Choose pixel or sky coordinates for each mark.")
+        if self.centroidPixel is not None and self.pixel is None:
+            raise ValueError("Keep the original pixel coordinates when choosing a centroid.")
         return self
 
 

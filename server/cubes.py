@@ -24,6 +24,7 @@ SIDE = 512
 CHANNELS = 102
 TILE_RELEASE = "hips_20261026"
 CUBE_REFERENCE = "https://irsa.ipac.caltech.edu/data/SPHEREx/docs/overview_dr1.html"
+CUBE_DOI = "10.26131/IRSA679"
 BLANK_CHANNELS = {50, 51}
 
 
@@ -128,5 +129,5 @@ def coadded_spectrum(source, wavelength_range=None):
     if partial:
         warnings.append("Some channels have no data or could not be read within the job budget.")
     return {"mode": "coadded_cube", "method": "nearest cube pixel", "samples": samples, "partial": partial,
-            "units": "MJy/sr", "warnings": warnings, "archiveUrl": archive_url, "archiveDoi": "10.26131/IRSA678",
+            "units": "MJy/sr", "warnings": warnings, "archiveUrl": archive_url, "archiveDoi": CUBE_DOI,
             "referenceUrl": CUBE_REFERENCE, "transferBytes": budget.bytes}

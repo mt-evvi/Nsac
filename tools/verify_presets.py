@@ -13,11 +13,10 @@ from PIL import Image
 from server.config import ROOT
 from tools.build_presets import CATALOG, at_center_compatible
 
-PUBLIC = ROOT / "web" / "public"
 EXPECTED_ARCHIVE = "https://irsa.ipac.caltech.edu/ibe/data/spherex/"
 
 
-def validate_frame(slug, shape, frame):
+def validate_frame(slug, shape, frame, root):
     assert frame["state"] == "prepared"
     assert frame["archiveUrl"].startswith(EXPECTED_ARCHIVE)
     assert frame["obsId"] in frame["productId"]
@@ -25,8 +24,9 @@ def validate_frame(slug, shape, frame):
     wave, band = frame["wavelengthUm"], frame["bandwidthUm"]
     assert 0.75 <= wave <= 5 and 0 < band < 0.2
     assert frame["wavelengthCalibration"] == "cwave-cband"
-    image_path = PUBLIC / frame["imageUrl"].lstrip("/")
-    mask_path = PUBLIC / frame["maskUrl"].lstrip("/")
+    public = root / "web" / "public"
+    image_path = public / frame["imageUrl"].lstrip("/")
+    mask_path = public / frame["maskUrl"].lstrip("/")
     content = hashlib.sha256(image_path.read_bytes() + mask_path.read_bytes()).hexdigest()[:24]
     assert image_path.stem == content and mask_path.stem == f"{content}-mask"
     with Image.open(image_path) as png:
@@ -34,7 +34,7 @@ def validate_frame(slug, shape, frame):
     with Image.open(mask_path) as png:
         mask = np.array(png) > 0
     assert raster.shape == (*shape, 4) and mask.shape == shape
-    path = ROOT / "presets" / slug / f'{frame["frameId"]}.npz'
+    path = root / "presets" / slug / f'{frame["frameId"]}.npz'
     with np.load(path, allow_pickle=False) as stored:
         arrays = {name: stored[name] for name in ("image", "variance", "valid", "coverage", "wavelength", "bandwidth")}
     assert all(value.shape == shape for value in arrays.values())
@@ -56,8 +56,8 @@ def overlap(a, b):
     return float(np.mean(a["valid"] & b["valid"] & (offset <= width / 2) & (high - low >= width / 2)))
 
 
-def verify(slug):
-    data = json.loads((PUBLIC / "presets" / slug / "manifest.json").read_text())["data"]
+def verify(slug, *, root=ROOT):
+    data = json.loads((root / "web" / "public" / "presets" / slug / "manifest.json").read_text())["data"]
     assert data["seriesId"] == f"preset-{slug}"
     frames = data["frames"]
     assert len(frames) == data["counts"]["preparedFrames"] >= 2
@@ -65,7 +65,7 @@ def verify(slug):
     assert list(frames) == sorted(frames, key=lambda frame: frame["startUtc"])
     assert len({tuple(frame["stretch"]) for frame in frames}) == 1
     shape = data["grid"]["height"], data["grid"]["width"]
-    arrays = [validate_frame(slug, shape, frame) for frame in frames]
+    arrays = [validate_frame(slug, shape, frame, root) for frame in frames]
     pairs = [(i, j, overlap(arrays[i], arrays[j])) for i, j in combinations(range(len(frames)), 2)
              if at_center_compatible(frames[i], frames[j])]
     assert pairs and max(fraction for _, _, fraction in pairs) >= 0.25
@@ -87,8 +87,9 @@ def verify(slug):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("slugs", nargs="*", metavar="PRESET")
+    parser.add_argument("--root", type=Path, default=ROOT, help="Project-shaped directory containing the examples.")
     args = parser.parse_args()
     for slug in args.slugs or list(CATALOG):
         if slug not in CATALOG:
             parser.error(f"Unknown example {slug}")
-        verify(slug)
+        verify(slug, root=args.root)

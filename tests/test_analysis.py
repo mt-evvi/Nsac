@@ -4,8 +4,13 @@ from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pytest
+from astropy.coordinates import SkyCoord
+from pydantic import ValidationError
 
-from server.analysis import AnalysisError, _matched, compare, detect, track
+from server.analysis import (AnalysisError, _associate, _matched, _native_sources, _signed_residual_groups,
+                             compare, detect, frame_time, track)
+from server.contracts import TrackQuery
+from server.imaging import wcs_for
 
 N = 64
 SCALE = 6 / 3600
@@ -117,6 +122,52 @@ def test_source_recognition_quiet_field_and_injections():
     assert len(result["forecast"]["samples"]) <= 25
 
 
+def test_covariance_gate_resolves_a_precise_competitor_and_forecasts_a_held_visit():
+    frames = [scene(i, random=False, wavelengthCalibration="cwave-cband", epsfValidated=False) for i in range(4)]
+    for frame, x in zip(frames, (20, 21.1, 22.8, 24.2)):
+        frame["effectivePsf"] = _gaussian_kernel(0.95, 0.95)
+        inject(frame["image"], x, 33, 115)
+    inject(frames[2]["image"], 18.67, 33, 115)
+    assert _matched(frames[0], frames[2])[4]["registration"]["psfMatchingStatus"] == "MATCHED"
+
+    detection = detect(frames[:3])
+    assert len(detection["candidates"]) == 1
+    candidate = detection["candidates"][0]
+    rival = next(source for source in detection["sources"][2]["sources"] if 18 < source["pixel"]["x"] < 20)
+    previous_x = candidate["marks"][1]["pixel"]["x"]
+    assert 2.16 < previous_x - rival["pixel"]["x"] < 2.54
+    assert candidate["label"] == "motion candidate" and not candidate["ambiguous"]
+    assert len(candidate["marks"]) == 3
+
+    forecast = track(frames[:3], marks=candidate["marks"], automatic=True)["forecast"]
+    held = next(source for source in _native_sources(frames[3], 50) if 23 < source["pixel"]["x"] < 26)
+    actual = wcs_for(GRID).pixel_to_world(held["pixel"]["x"], held["pixel"]["y"])
+    prediction = forecast["samples"][-1]
+    predicted = SkyCoord(prediction["raDeg"], prediction["decDeg"], unit="deg")
+    assert forecast["horizonDays"] == 12
+    assert datetime.fromisoformat(prediction["timeUtc"]) == frame_time(frames[3]["metadata"])
+    error = predicted.separation(actual).arcsec
+    assert error < 1 and error < prediction["ellipse95Arcsec"]
+
+
+def test_association_projects_covariance_and_keeps_the_hard_radius_cap():
+    start = datetime(2025, 5, 1, tzinfo=timezone.utc)
+
+    def source(index, x, x_error=0.08, y_error=0.08):
+        return {**mark(index, x, 33), "covariancePx2": [[x_error**2, 0], [0, y_error**2]]}
+
+    visits = [(start, [source(0, 20)]), (start + timedelta(days=12), [source(1, 21.1)])]
+    date = start + timedelta(days=24)
+    target = source(2, 22.2)
+    perpendicular = _associate([*visits, (date, [target, source(2, 18.85, y_error=0.45)])], 10)[0]
+    assert len(perpendicular["points"]) == 3 and not perpendicular["ambiguous"]
+    parallel = _associate([*visits, (date, [target, source(2, 18.85, x_error=0.45)])], 10)[0]
+    assert len(parallel["points"]) == 2 and parallel["ambiguous"]
+
+    distant = _associate([(start, [source(0, 20)]), (start + timedelta(days=120), [source(1, 28.1)])], 10)
+    assert [len(track["points"]) for track in distant] == [1, 1]
+
+
 def test_manual_marks_round_trip_ra_wrap_and_same_visit_rejection():
     frames = [scene(0), scene(1)]
     result = track(frames, marks=[mark(0, 33, 30), mark(1, 29, 30)])
@@ -139,6 +190,50 @@ def test_manual_marks_round_trip_ra_wrap_and_same_visit_rejection():
     with pytest.raises(AnalysisError) as rejected_mask:
         track(frames, marks=[mark(0, 33, 30), mark(1, 29, 30)])
     assert rejected_mask.value.code == "MARK_MASKED"
+
+
+def test_snapped_centroids_are_remeasured_and_keep_original_marks():
+    frames = [scene(i) for i in range(3)]
+    for i, frame in enumerate(frames):
+        inject(frame["image"], 28.2 + 1.15 * i, 29.5, 130)
+    detection = detect(frames, region={"x": 26, "y": 27, "width": 7, "height": 6})
+    sources = [next(source for source in group["sources"] if 27 < source["pixel"]["x"] < 32)
+               for group in detection["sources"]]
+    manual = [mark(i, 28 + i, 29) for i in range(3)]
+    for anchor, source in zip(manual, sources):
+        anchor["centroidPixel"] = {**source["pixel"], "x": round(source["pixel"]["x"], 4)}
+
+    request = TrackQuery(marks=manual)
+    result = track(frames, marks=[value.model_dump(exclude_none=True) for value in request.marks])
+    for measured, anchor, source in zip(result["measurements"], manual, sources):
+        assert measured["pixel"] == source["pixel"]
+        assert measured["originalPixel"] == anchor["pixel"] == measured["original"]["pixel"]
+        assert measured["covariancePx2"] == source["covariancePx2"]
+        assert measured["method"] == source["method"]
+        assert measured["sigmaArcsec"] == pytest.approx(np.hypot(source["sigmaPx"], 0.15) * 6)
+    assert result["forecastStatus"] == "UNVERIFIED_ASSOCIATION" and result["forecast"] is None
+
+    manual[0]["centroidPixel"]["x"] += 0.5
+    with pytest.raises(AnalysisError) as mismatch:
+        track(frames, marks=manual)
+    assert mismatch.value.code == "CENTROID_UNAVAILABLE"
+    manual[0]["centroidPixel"] = sources[0]["pixel"]
+    centroid = sources[0]["pixel"]
+    frames[0]["valid"][round(centroid["y"]), round(centroid["x"])] = False
+    with pytest.raises(AnalysisError) as masked:
+        track(frames, marks=manual)
+    assert masked.value.code == "CENTROID_UNAVAILABLE"
+
+
+def test_centroid_input_retains_manual_pixel_and_refuses_client_uncertainty():
+    first = mark(0, 28, 29)
+    second = {**mark(1, 30, 29), "centroidPixel": {"x": 30.1, "y": 29.5}}
+    with pytest.raises(ValidationError, match="original pixel coordinates"):
+        TrackQuery(marks=[{
+            "frameId": "frame0", "sky": {"raDeg": 0, "decDeg": 0}, "centroidPixel": {"x": 28.1, "y": 29.5}
+        }, second])
+    with pytest.raises(ValidationError, match="Extra inputs"):
+        TrackQuery(marks=[first, {**second, "sigmaPx": 0.000001}])
 
 
 def test_forecast_refuses_stationary_ambiguous_and_curved_measurements():
@@ -250,3 +345,44 @@ def test_ranked_brightness_requires_a_locally_compatible_aperture():
     masked = detect([a, b])
     assert masked["candidates"] == []
     assert len(masked["sources"][1]["sources"]) > len(STABLE)
+
+
+def test_residual_groups_find_disappearances_and_appearances_after_psf_matching():
+    from scipy.ndimage import convolve
+
+    a, b = _psf_pair()
+    for frame, x, y, amplitude in ((a, 25, 37, 240), (b, 33, 31, 260), (b, 29, 15, 250)):
+        signals = np.zeros_like(frame["image"])
+        inject(signals, x, y, amplitude)
+        frame["image"] += convolve(signals, frame["effectivePsf"])
+    b["valid"][15, 29] = False
+    # A one-pixel event would resemble a compact source after cross-convolution alone.
+    b["image"][38, 44] += 1800
+    result = detect([a, b])
+    assert not result["candidates"] and not result["partial"]
+    assert len(result["residualGroups"]) == 2
+    groups = {group["sign"]: group for group in result["residualGroups"]}
+    for sign, x, y in (("positive", 33, 31), ("negative", 25, 37)):
+        group = groups[sign]
+        assert group["pixel"] == pytest.approx({"x": x, "y": y}, abs=0.01)
+        assert group["frameA"] == "frame0" and group["frameB"] == "frame1"
+        assert group["timeA"].startswith("2025-05-01") and group["timeB"].startswith("2025-05-13")
+        assert group["label"] == "single-pair change" and group["snr"] >= 5
+        assert group["covariancePx2"][0][0] > 0 and group["fluxError"] > 0
+        assert "candidateId" not in group
+    assert groups["positive"]["flux"] > 0 > groups["negative"]["flux"]
+
+    region = {"x": 30, "y": 28, "width": 8, "height": 8}
+    assert [group["sign"] for group in detect([a, b], region=region)["residualGroups"]] == ["positive"]
+    b["metadata"]["wavelengthCalibration"] = "wcs-wave"
+    assert detect([a, b])["residualGroups"] == []
+
+
+def test_residual_flux_error_includes_measured_noise_inflation():
+    a, b = scene(0, random=False), scene(1, random=False)
+    inject(b["image"], 33, 31, 140)
+    diff, _, variance, valid, _ = _matched(a, b)
+    first, = _signed_residual_groups(a, b, (diff, variance, valid, 1.0), limit=50, region=None)
+    inflated, = _signed_residual_groups(a, b, (diff, variance, valid, 2.0), limit=50, region=None)
+    assert inflated["fluxError"] == pytest.approx(first["fluxError"] * 2)
+    assert inflated["snr"] == pytest.approx(first["snr"] / 2)

@@ -3,6 +3,7 @@
 import io
 import random
 import time
+from hashlib import sha256
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
@@ -16,6 +17,7 @@ from PIL import Image
 
 from .config import MIB
 from .contracts import Problem
+from .store import content_key
 from .upstream import TransferBudget, UpstreamError, fetch
 
 PIXEL_ARCSEC = 6.15
@@ -157,6 +159,26 @@ def timestamp(header, key):
     return Time(header[key], scale="utc").isot + "Z"
 
 
+def survey_pass(header, release):
+    """Read the planned all-sky pass from the FITS position angle and release."""
+    first_pass = {"DR1": 1, "QR3": 3}.get(release.upper())
+    if first_pass is None or str(header.get("SPS_FLAGS", "")).strip().lower() != "all_sky":
+        return None
+    if str(header.get("NON_SURVEY", "")).strip().lower() != "false":
+        return None
+    # Explanatory Supplement §2.2 documents SPS_PA_ECL. Table A.35 and
+    # the public DR1/QR3 FITS IMAGE headers use SPS_EPA for that angle.
+    value = header.get("SPS_EPA", header.get("SPS_PA_ECL"))
+    if isinstance(value, bool):
+        return None
+    try:
+        angle = float(value) % 360
+    except (TypeError, ValueError):
+        return None
+    offset = {0.0: 0, 180.0: 1}.get(angle)
+    return f"Survey {first_pass + offset}" if offset is not None else None
+
+
 def calibrated_passbands(path, header, cx, cy, x, y):
     native = alternate_wcs(header, "A")
     native_x, native_y = native.pixel_to_world_values(x, y)
@@ -253,6 +275,7 @@ def process(payload, query, entry, grid, stretch=None, spectral_calibration=None
                 wave, band = np.nan, np.nan
                 wave_grid, band_grid = np.full_like(image, np.nan), np.full_like(image, np.nan)
             mid = timestamp(header, "DATE-AVG") if "DATE-AVG" in header else start
+            pass_label = survey_pass(header, entry["release"])
             psf, psf_metadata = effective_psf(hdul, header, cx, cy, x, y, raw.shape)
     except (KeyError, ValueError, OSError) as exc:
         raise Problem("BAD_FITS", "The archive cutout is incomplete or has invalid FITS headers.") from exc
@@ -279,6 +302,8 @@ def process(payload, query, entry, grid, stretch=None, spectral_calibration=None
                 "processingVersion": "tan-bilinear-v1", "psfFwhmArcsec": header.get("PSF_FWHM"),
                 "archiveDoi": {"DR1": "10.26131/IRSA678", "QR3": "10.26131/IRSA662"}.get(entry["release"].upper()),
                 "transferBytes": len(payload)}
+    if pass_label is not None:
+        metadata["surveyPass"] = pass_label
     if spectral_calibration is not None:
         metadata["wavelengthCalibrationId"] = Path(spectral_calibration).name
     if psf is not None:
@@ -332,15 +357,22 @@ def coadd(manifest, candidate, store, result_id):
     weighted = weight * np.where(valid, first["image"], 0)
     used = np.where(valid, 1, 0)
     contributors = [anchor]
+    upstream_problem = None
+    exceeded_limit = len(choices) > 5
     for frame in choices[:5]:
-        if len(contributors) >= 4 or time.monotonic() > deadline - 1 or budget.attempts >= budget.max_attempts:
+        if len(contributors) >= 4:
+            break
+        if time.monotonic() > deadline - 1 or budget.attempts >= budget.max_attempts:
+            exceeded_limit = True
             break
         nominal = frame.get("wavelengthUm")
         if nominal is not None and anchor.get("wavelengthUm") and abs(nominal - anchor["wavelengthUm"]) > 0.12:
             continue
         try:
             metadata, arrays = resolve(frame)
-        except Problem:
+        except Problem as exc:
+            if upstream_problem is None and (exc.retryable or exc.code == "LIMIT_REACHED"):
+                upstream_problem = exc
             continue
         if not compatible(anchor, metadata):
             continue
@@ -354,15 +386,26 @@ def coadd(manifest, candidate, store, result_id):
         used += common
         contributors.append(metadata)
     if len(contributors) < 2:
+        if upstream_problem is not None:
+            raise upstream_problem
+        if exceeded_limit:
+            raise Problem("LIMIT_REACHED", "No second eligible exposure was found within the coadd limits.", 409)
         raise Problem("NO_COMPARABLE_FRAMES", "No second exposure in this visit passed the coadd wavelength and coverage checks.", 409)
     keep = used > 1
     result = dict(first, image=np.divide(weighted, sum_weight, out=np.full_like(weighted, np.nan), where=keep),
                   variance=np.divide(1, sum_weight, out=np.full_like(sum_weight, np.nan), where=keep), valid=keep)
     result.pop("effectivePsf", None)
     stretch, png, mask = render_frame(result, anchor.get("stretch"))
-    data = {**anchor, "frameId": result_id, "representation": "coadd", "stretch": stretch,
+    provenance = [{key: frame[key] for key in ("productId", "archiveUrl", "startUtc", "endUtc")} for frame in contributors]
+    digests = {key: sha256(result[key].tobytes()).hexdigest() for key in ("image", "variance", "valid", "wavelength", "bandwidth")}
+    variant_id = content_key(result_id, provenance, digests)
+    data = {**anchor, "frameId": variant_id, "representation": "coadd", "stretch": stretch,
             "startUtc": min(frame["startUtc"] for frame in contributors), "endUtc": max(frame["endUtc"] for frame in contributors),
-            "contributors": [{key: frame[key] for key in ("productId", "archiveUrl", "startUtc", "endUtc")} for frame in contributors],
+            "contributors": provenance, "transferBytes": budget.bytes,
             "validFraction": float(np.mean(keep)), "warnings": ["Within-visit inverse-variance mean. Pixels require at least two contributors."]}
+    if upstream_problem is not None:
+        data["warnings"].append(f"Some exposures could not be checked. {upstream_problem.message}")
     data.pop("epsfModel", None)
+    if any(frame.get("surveyPass") != anchor.get("surveyPass") for frame in contributors):
+        data.pop("surveyPass", None)
     return data, result, png, mask

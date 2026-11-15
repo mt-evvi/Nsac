@@ -2,11 +2,13 @@
 
 import argparse
 import hashlib
+import io
 import json
+import os
 import time
 from datetime import datetime
 from pathlib import Path
-from tempfile import NamedTemporaryFile
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 
 import numpy as np
 from astropy.io import fits
@@ -14,6 +16,7 @@ from astropy.io import fits
 from server import archive, imaging
 from server.config import MIB, ROOT
 from server.contracts import Problem, ready
+from server.store import content_key
 from server.upstream import TransferBudget
 
 START = "2025-04-01"
@@ -76,15 +79,19 @@ NOTES = {
 def write_atomic(target, data):
     target.parent.mkdir(parents=True, exist_ok=True)
     with NamedTemporaryFile(dir=target.parent, prefix=".build-", delete=False) as temp:
-        temp.write(data)
         temp_path = Path(temp.name)
-    temp_path.replace(target)
-    target.chmod(0o644)
+        try:
+            temp.write(data)
+            os.fchmod(temp.fileno(), 0o644)
+            temp.close()
+            temp_path.replace(target)
+        finally:
+            temp_path.unlink(missing_ok=True)
 
 
-def archive_manifest(slug, query, snapshot_dir, barnard_dr1):
+def archive_manifest(slug, query, snapshot_dir, barnard_dr1, *, budget=None, deadline=None):
     if snapshot_dir is None:
-        return archive.discover(query)
+        return archive.discover(query, budget=budget, deadline=deadline)
     query = archive.bounds(query)[0]
     sources = [snapshot_dir / name for name in SNAPSHOT[slug].split()]
     if slug == "barnard":
@@ -168,10 +175,19 @@ def shortlist(candidates, target, width, required=(), near_target=False):
     return frozen + [frame for frame in rings if frame["obsId"] not in fixed]
 
 
-def bundle(slug, args, run_budget):
+def bundle(slug, args, run_budget, staging):
     title, _, _, _, ra, dec, fov, detector, wish = CATALOG[slug]
     query = {"raDeg": ra, "decDeg": dec, "fovArcmin": fov, "start": START, "end": END}
-    archive_data = archive_manifest(slug, query, args.snapshot_dir, args.barnard_dr1)
+    started = time.monotonic()
+    if started >= args.deadline:
+        raise RuntimeError("The preset run reached its deadline.")
+    available = min(256 * MIB, run_budget.max_bytes - run_budget.bytes)
+    metadata_budget = TransferBudget(min(4 * MIB, available), 12)
+    try:
+        archive_data = archive_manifest(slug, query, args.snapshot_dir, args.barnard_dr1,
+                                        budget=metadata_budget, deadline=args.deadline)
+    finally:
+        run_budget.charge(metadata_budget.bytes)
     spectral = args.calibration_dir / f"spectral_wcs_D{detector}_spx_cal-swcs-v5-2026-191.fits"
     pinned = ("2025W33_2C_0321_1", "2026W12_2A_0520_4") if slug == "barnard" else ()
     candidates = [entry for entry in archive_data["frames"] if entry["detector"] == detector]
@@ -187,9 +203,8 @@ def bundle(slug, args, run_budget):
         raise RuntimeError(f"Missing official D{detector} spectral calibration {spectral}")
     choices = shortlist(candidates, wish, fov * 60, pinned, near_target=slug.startswith("wise-"))
     print(f"{title}: {len(choices)} candidates for {archive_data['counts']['observationDates']} archive dates", flush=True)
-    started = time.monotonic()
     grid, prepared, errors = archive_data["grid"], [], []
-    budget = TransferBudget(min(256 * MIB, run_budget.max_bytes - run_budget.bytes), 64)
+    budget = TransferBudget(available - metadata_budget.bytes, 64)
     visited = set()
     anchor = None
     for entry in choices:
@@ -203,7 +218,8 @@ def bundle(slug, args, run_budget):
         try:
             frame_args = {"spectral_calibration": spectral if spectral.exists() else None}
             if source_path.is_file():
-                raw = source_path.read_bytes()
+                with source_path.open("rb") as stream:
+                    raw = stream.read(12 * MIB + 1)
                 if len(raw) > 12 * MIB:
                     raise ValueError("saved cutout exceeds single-response limit")
                 meta, arrays, _, _ = imaging.process(raw, query, entry, grid, **frame_args)
@@ -236,18 +252,15 @@ def bundle(slug, args, run_budget):
     for frame, arrays in prepared:
         _, png, mask = imaging.render_frame(arrays, stretch=stretch)
         version = hashlib.sha256(png + mask).hexdigest()[:24]
-        frame_id = frame["frameId"]
-        base = ROOT / "web" / "public" / "presets" / slug
+        base = staging / "web" / "public" / "presets" / slug
         write_atomic(base / f"{version}.png", png)
         write_atomic(base / f"{version}-mask.png", mask)
-        array_path = ROOT / "presets" / slug / f"{frame_id}.npz"
-        array_path.parent.mkdir(parents=True, exist_ok=True)
-        with NamedTemporaryFile(dir=array_path.parent, prefix=".build-", delete=False) as tmp:
-            np.savez_compressed(tmp, **arrays)
-            tmp_path = Path(tmp.name)
-        tmp_path.replace(array_path)
-        array_path.chmod(0o644)
-        frame.update({"imageUrl": f"/presets/{slug}/{version}.png", "maskUrl": f"/presets/{slug}/{version}-mask.png",
+        buffer = io.BytesIO()
+        np.savez_compressed(buffer, **arrays)
+        payload = buffer.getvalue()
+        frame_id = content_key("preset-array-v1", frame["frameId"], hashlib.sha256(payload).hexdigest())
+        write_atomic(staging / "presets" / slug / f"{frame_id}.npz", payload)
+        frame.update({"frameId": frame_id, "imageUrl": f"/presets/{slug}/{version}.png", "maskUrl": f"/presets/{slug}/{version}-mask.png",
                       "stretch": stretch})
         included.append(frame)
         sources.add(frame["release"])
@@ -258,33 +271,41 @@ def bundle(slug, args, run_budget):
                 "baselineDays": baseline.total_seconds() / 86400, "warnings": notes,
                 "catalogReference": catalog_reference(slug),
                 "presetSlug": slug, "referenceStretch": stretch, "fixtureSelection": "Independent matched cutouts",
-                "sourceReleases": sorted(sources), "downloadBytes": budget.bytes, "generationSeconds": round(time.monotonic() - started, 2)}
+                "sourceReleases": sorted(sources), "downloadBytes": budget.bytes + metadata_budget.bytes,
+                "generationSeconds": round(time.monotonic() - started, 2)}
     body = json.dumps(ready(manifest, warnings=notes), indent=2, allow_nan=False).encode() + b"\n"
-    write_atomic(ROOT / "web" / "public" / "presets" / slug / "manifest.json", body)
+    write_atomic(staging / "web" / "public" / "presets" / slug / "manifest.json", body)
 
 
 def main():
+    from tools.verify_presets import verify
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("slugs", nargs="+", choices=tuple(CATALOG))
     parser.add_argument("--snapshot-dir", type=Path)
     parser.add_argument("--barnard-dr1", type=Path)
     parser.add_argument("--calibration-dir", type=Path, required=True)
     parser.add_argument("--cutout-dir", type=Path, default=Path("/tmp"))
+    parser.add_argument("--output", type=Path, default=ROOT, help="Project-shaped destination for the verified examples.")
     parser.add_argument("--frames", type=int, choices=range(2, 9), default=4)
     args = parser.parse_args()
     if args.snapshot_dir and not args.barnard_dr1 and "barnard" in args.slugs:
         parser.error("--barnard-dr1 is required with a historical Barnard snapshot")
     args.deadline = time.monotonic() + 30 * 60
     budget = TransferBudget(2048 * MIB, 384)
-    failed = False
-    for slug in args.slugs:
-        try:
-            bundle(slug, args, budget)
-        except (OSError, RuntimeError, Problem) as exc:
-            failed = True
-            print(f"{slug}: {exc}", flush=True)
-    if failed:
-        raise SystemExit(1)
+    with TemporaryDirectory(prefix="spherex-preset-build-") as temporary:
+        staging = Path(temporary)
+        for slug in dict.fromkeys(args.slugs):
+            try:
+                bundle(slug, args, budget, staging)
+                verify(slug, root=staging)
+            except (AssertionError, OSError, RuntimeError, ValueError, Problem) as exc:
+                parser.exit(1, f"{slug}: preset build or verification failed. Existing manifests were preserved. {exc}\n")
+        files = sorted(path for path in staging.rglob("*") if path.is_file())
+        if sum(path.stat().st_size for path in files) > 100 * MIB:
+            parser.exit(1, "The generated bundle exceeds the 100 MiB release limit. Existing manifests were preserved.\n")
+        for path in sorted(files, key=lambda path: path.name == "manifest.json"):
+            write_atomic(args.output / path.relative_to(staging), path.read_bytes())
 
 
 if __name__ == "__main__":
